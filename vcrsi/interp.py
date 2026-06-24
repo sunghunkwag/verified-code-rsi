@@ -163,10 +163,15 @@ def _ev(node: Node, ctx: _Ctx) -> Any:
 
 
 def run(prog: Node, args: List[Any], blocks: Optional[Dict[str, Block]] = None,
-        max_steps: int = DEFAULT_STEPS) -> RunResult:
+        max_steps: int = DEFAULT_STEPS, env: Optional[Dict[str, Any]] = None
+        ) -> RunResult:
     """Execute ``prog`` on ``args``. Never raises on candidate misbehaviour;
-    returns a RunResult whose ``error`` is set on any controlled failure."""
+    returns a RunResult whose ``error`` is set on any controlled failure.
+    ``env`` optionally preseeds loop variables (it/acc) -- used by the bottom-up
+    OE synthesizer to evaluate combinator BODIES on probe element values."""
     ctx = _Ctx(args, blocks, max_steps)
+    if env:
+        ctx.env.update(env)
     try:
         val = _ev(prog, ctx)
         return RunResult(val, None, ctx.steps, ctx.max_trace_depth, ctx.iters)

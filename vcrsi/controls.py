@@ -278,6 +278,130 @@ def ctl_recompute_solved(oracles) -> Tuple[bool, str]:
                 f"re-verified={recomputed}; all clear inlined floor={floor_ok}")
 
 
+# =========================================================================== #
+# Phase B (v2) transfer- and mechanism-specific controls (§5)                  #
+# =========================================================================== #
+def ctl_family_diversity(oracles) -> Tuple[bool, str]:
+    from collections import Counter
+    groups = Counter(orc.task.group for orc in oracles.values())
+    n_fam = len(groups)
+    total = sum(groups.values())
+    maxfrac = max(groups.values()) / total
+    ok = n_fam >= 4 and maxfrac <= 0.40
+    return ok, (f"{n_fam} families; largest is {maxfrac:.0%} of {total} tasks "
+                f"(need >=4 families, none >40%) -> {dict(groups)}")
+
+
+def ctl_transfer_load_bearing_and_socratic(oracles) -> Tuple[bool, str]:
+    # positive control: the detector FIRES on a genuine planted cross-group
+    # transfer (load-bearing AND Socratic) and REJECTS a spurious block.
+    from .transfer import detector_self_test
+    ok, det = detector_self_test()
+    return ok, det
+
+
+def ctl_transfer_socratic_rejects_spurious(oracles) -> Tuple[bool, str]:
+    # build a block whose B-solution fits the PUBLIC examples but is semantically
+    # wrong; the Socratic gate must find a distinguishing input and reject it.
+    from .socratic import socratic_admit
+    from .ir import Node
+    orc = oracles["clamp_low"]
+    task = orc.task
+    pub = orc.public_view().public_examples
+    # spurious: identity on the list (matches public iff no clamping needed)
+    spurious = Node("arg", "L", const=0)
+    fits_public = all(_run_eq(spurious, a, e) for a, e in pub)
+    admit, detail = socratic_admit(spurious, task, {})
+    # it should be rejected (a distinguishing input exists), regardless of public
+    ok = (not admit)
+    return ok, (f"spurious-block fits_public={fits_public}; Socratic admit="
+                f"{admit} (must be False) -- {detail}")
+
+
+def _run_eq(prog, args, exp) -> bool:
+    r = run(prog, list(args))
+    return r.ok and r.value == exp
+
+
+def ctl_mining_is_B_blind(oracles) -> Tuple[bool, str]:
+    # functional: mining for held-out B uses only families != B, so no mined
+    # block's home family is B. + source check: no held-out symbols in miner.
+    from .transfer import mine_blind, home_family_of, Mechanisms
+    from .tasks import TRANSFER_FAMILIES
+    from . import transfer as T, search_oe as OE, archive as A
+    B = "select"
+    mining = [f for f in TRANSFER_FAMILIES if f != B]
+    arch = mine_blind(oracles, mining, Mechanisms(), budget=4000, rounds=1)
+    homes = {home_family_of(b) for b in arch.blocks}
+    no_B = B not in homes
+    import inspect
+    src = inspect.getsource(OE) + inspect.getsource(A)
+    src_clean = ("_holdout" not in src and "_make_example" not in src)
+    ok = no_B and src_clean
+    return ok, (f"B={B} held out; mined block home-families={homes or '{}'} "
+                f"(B absent={no_B}); OE/archive source holdout-free={src_clean}")
+
+
+def ctl_normalizer_preserves_semantics(oracles) -> Tuple[bool, str]:
+    from .normalize import normalize_block, _equiv, _fold
+    from .ir import Block, Node, pp
+    p0 = Node("param", "L", const=0)
+    # a foldable / simplifiable block: lrev(lrev($0)) == $0
+    blk = Block("T", ("L",), Node("lrev", "L", (Node("lrev", "L", (p0,)),)),
+                "L", origin="fam:x")
+    nb, changed = normalize_block(blk)
+    simplified = changed and nb.body.op != "lrev"            # actually changed
+    preserved = _equiv(blk.body, nb.body, ("L",))
+    # a behaviour-CHANGING fake normalization must be rejected by _equiv
+    fake = Node("lrev", "L", (p0,))                          # != lrev(lrev p0)
+    fake_rejected = not _equiv(blk.body, fake, ("L",))
+    ok = simplified and preserved and fake_rejected
+    return ok, (f"normalized lrev(lrev x)->{pp(nb.body)} (changed={changed}); "
+                f"semantics preserved={preserved}; behaviour-changing rewrite "
+                f"rejected={fake_rejected}")
+
+
+def ctl_oe_no_leakage(oracles) -> Tuple[bool, str]:
+    from . import search_oe as OE
+    from .search_oe import oe_solve
+    import inspect
+    src = inspect.getsource(OE)
+    forbidden = ["_holdout", "_make_example", ".reference", "task.reference",
+                 "from .tasks", "from .oracle"]
+    hits = [w for w in forbidden if w in src]
+    # functional: OE solves rle_decode on PUBLIC and the winner passes the SEALED
+    # holdout (verified by the oracle, not by the enumerator).
+    prog = oe_solve(oracles["rle_decode"].public_view(), blocks=[])
+    held = prog is not None and oracles["rle_decode"].verify(prog)
+    ok = (not hits) and held
+    return ok, (f"OE source holdout-free={not hits}; OE winner passes SEALED "
+                f"holdout via oracle={held}")
+
+
+def ctl_archive_spread_is_real(oracles) -> Tuple[bool, str]:
+    from .transfer import mine_blind, Mechanisms
+    arch = mine_blind(oracles, ["seqcode", "select"], Mechanisms(), budget=6000,
+                      rounds=1)
+    cov = arch.coverage()
+    ok = cov["families_spanned"] >= 2
+    return ok, (f"archive coverage: {cov} (need cells spanning >=2 families)")
+
+
+def ctl_ablation_runs(oracles) -> Tuple[bool, str]:
+    # confirm all six configs are defined and each executes end-to-end on one
+    # held-out family at a tiny budget (a skipped config = fail).
+    from .transfer import transfer_on_family, Mechanisms
+    configs = [Mechanisms(), Mechanisms(M1_oe=False), Mechanisms(M2_trigger=False),
+               Mechanisms(M3_normalize=False), Mechanisms(M4_socratic=False),
+               Mechanisms(M5_archive=False)]
+    ran = 0
+    for m in configs:
+        transfer_on_family(oracles, "select", m, budget=2500)
+        ran += 1
+    ok = ran == 6
+    return ok, f"all {ran}/6 ablation configurations executed end-to-end"
+
+
 # --------------------------------------------------------------------------- #
 # registry + runner                                                            #
 # --------------------------------------------------------------------------- #
@@ -292,6 +416,17 @@ CONTROLS: List[Tuple[str, Callable]] = [
     ("determinism (§4.11)", ctl_determinism),
     ("lineage_block_on_block (§4.8)", ctl_lineage),
     ("counterfactual_delta_positive (§4.4)", ctl_counterfactual_delta),
+    # --- Phase B (v2) transfer + mechanism controls (§5) --- #
+    ("family_diversity (§2)", ctl_family_diversity),
+    ("transfer_load_bearing+socratic / detector (§5.1)",
+     ctl_transfer_load_bearing_and_socratic),
+    ("transfer_socratic_rejects_spurious (§5.2)",
+     ctl_transfer_socratic_rejects_spurious),
+    ("mining_is_B_blind (§5.3)", ctl_mining_is_B_blind),
+    ("normalizer_preserves_semantics (§5.4)", ctl_normalizer_preserves_semantics),
+    ("oe_no_leakage (§5.5)", ctl_oe_no_leakage),
+    ("archive_spread_is_real (§5.7)", ctl_archive_spread_is_real),
+    ("ablation_runs (§5.8)", ctl_ablation_runs),
 ]
 
 

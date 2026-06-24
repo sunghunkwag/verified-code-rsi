@@ -14,6 +14,8 @@ from .counterfactual import run_counterfactual, DEFAULT_ORDER
 BUDGET = 6000
 ROUNDS = 7
 GATE_BUDGET = 6000
+TRANSFER_BUDGET = 16000      # per-task solve budget in the transfer experiment
+ABLATION_BUDGET = 11000      # smaller per-task budget for the 6-config ablation
 
 # A dedicated curriculum that elicits the block-on-block lineage (the library is
 # the sole adaptive channel here, so composed blocks are genuinely needed).
@@ -106,6 +108,72 @@ def run_demo() -> int:
 
 def SUITE_NOTE(oracles, name) -> str:
     return oracles[name].task.note or oracles[name].task.spec[:40]
+
+
+def run_transfer_mode() -> int:
+    from .transfer import (rotate_B, Mechanisms, cross_family_transfer_count,
+                           detector_self_test)
+    from .tasks import TRANSFER_FAMILIES
+    oracles = build_oracles()
+    print("=" * 78)
+    print("VERIFIED-CODE-RSI -- CROSS-FAMILY TRANSFER (rotate-B, B-blind mining)")
+    print("A block transfers to family B iff: mined B-blind, appears in an")
+    print("ADOPTED held-out B-solution, is LOAD-BEARING (removal -> OPEN), AND")
+    print("passes the Socratic gate (no distinguishing counterexample).")
+    print("=" * 78)
+    ok, det = detector_self_test()
+    print(f"detector self-test (positive control): {'PASS' if ok else 'FAIL'} -- {det}")
+    print("-" * 78)
+    res = rotate_B(oracles, Mechanisms(), budget=TRANSFER_BUDGET)
+    print("ROTATE-B MATRIX (all 5 mechanisms ON):")
+    print("  held-out B   frozen  adaptive  lib_blocks  cross-family-transfers")
+    for fr in res:
+        ctr = sum(1 for tr in fr.transfers if tr.counts)
+        print(f"  {fr.held_out:11s}  {fr.frozen_solved:^6d}  {fr.adaptive_solved:^8d}"
+              f"  {fr.n_blocks:^10d}  {ctr}")
+        for tr in fr.transfers:
+            mark = "COUNTS" if tr.counts else "rejected"
+            print(f"      {tr.home_family}->{fr.held_out} block {tr.block} in "
+                  f"{tr.task}: load_bearing={tr.load_bearing} "
+                  f"socratic={tr.socratic_ok} [{mark}]")
+    total = cross_family_transfer_count(res)
+    print("-" * 78)
+    print(f"TOTAL CROSS-FAMILY transfer_families (load-bearing AND Socratic) = {total}")
+    if total == 0:
+        print("RESULT: no library block mined in one family is load-bearing-and-")
+        print("Socratically-valid in a structurally-different held-out family.")
+        print("(The detector self-test above confirms the detector CAN report a")
+        print("positive, so this 0 is a measured negative, not a dead detector.)")
+    else:
+        print("RESULT: cross-family transfer measured (see COUNTS rows above).")
+    print("=" * 78)
+    return 0
+
+
+def run_ablation_mode() -> int:
+    from .transfer import rotate_B, Mechanisms, cross_family_transfer_count
+    oracles = build_oracles()
+    print("=" * 78)
+    print("VERIFIED-CODE-RSI -- ABLATION (which mechanism enables transfer?)")
+    print("=" * 78)
+    configs = [
+        ("all-on", Mechanisms()),
+        ("M1-off", Mechanisms(M1_oe=False)),
+        ("M2-off", Mechanisms(M2_trigger=False)),
+        ("M3-off", Mechanisms(M3_normalize=False)),
+        ("M4-off", Mechanisms(M4_socratic=False)),
+        ("M5-off", Mechanisms(M5_archive=False)),
+    ]
+    print("  config    cross-family transfers   (adaptive-solved over rotate-B)")
+    for name, mech in configs:
+        res = rotate_B(oracles, mech, budget=ABLATION_BUDGET)
+        ctr = cross_family_transfer_count(res)
+        solved = sum(fr.adaptive_solved for fr in res)
+        print(f"  {name:8s}  {ctr:^22d}   {solved}")
+    print("=" * 78)
+    print("If transfer is 0 in every configuration, no single mechanism (nor all)")
+    print("makes cross-family block transfer occur at this IR's abstraction level.")
+    return 0
 
 
 def run_counterfactual_mode() -> int:
