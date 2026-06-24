@@ -329,8 +329,9 @@ happen:
    candidate-filters and validators, not enablers, so removing them cannot create
    or destroy a genuine transfer.
 
-The honest conclusion: **within-family RSI works (Phase A, +2 delta); cross-family
-transfer of a mined block is REAL but minimal — one shared utility between two
+The honest conclusion: **within-family RSI works (Phase A, positive counterfactual
+delta, above); cross-family transfer of a mined block is REAL but minimal — one
+shared utility between two
 type-compatible families, enabled specifically by clean-block synthesis (M1) and
 quality-diversity spread (M5).** It does NOT extend across data types, and no
 *large* algorithmic abstraction transfers, because the structure that genuinely
