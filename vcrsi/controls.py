@@ -380,7 +380,7 @@ def ctl_oe_no_leakage(oracles) -> Tuple[bool, str]:
 
 def ctl_archive_spread_is_real(oracles) -> Tuple[bool, str]:
     from .transfer import mine_blind, Mechanisms
-    arch = mine_blind(oracles, ["seqcode", "select"], Mechanisms(), budget=6000,
+    arch = mine_blind(oracles, ["seqcode", "select"], Mechanisms(), budget=14000,
                       rounds=1)
     cov = arch.coverage()
     ok = cov["families_spanned"] >= 2

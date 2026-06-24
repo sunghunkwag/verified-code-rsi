@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 from .ir import Block, Node, pp, inline
 from .interp import run
 from .oracle import build_oracles, SealedOracle
-from .library import default_policy, Policy, mine_blocks, _block_calls
+from .library import default_policy, broad_policy, Policy, mine_blocks, _block_calls
 from .search import synthesize
 from .search_oe import oe_solve
 from .archive import MapElites
@@ -95,7 +95,7 @@ def portfolio_solve(view, blocks: List[Block], budget: int, seed: int,
         p = oe_solve(view, blocks)
         if p is not None:
             return p
-    pol = Policy(weights=dict(default_policy().weights), blocks=list(blocks),
+    pol = Policy(weights=dict(broad_policy().weights), blocks=list(blocks),
                  block_prob=0.25 if blocks else 0.0)
     prog, _stats = synthesize(view, pol, budget, seed)
     return prog
@@ -113,7 +113,7 @@ def mine_blind(oracles, mining_families: List[str], mech: Mechanisms,
                budget: int = 9000, rounds: int = 2) -> MapElites:
     arch = MapElites()
     solved: Dict[str, Node] = {}
-    pol = default_policy()
+    pol = broad_policy()
     tasks = [(fam, t) for fam in mining_families for t in TRANSFER_FAMILIES[fam]]
     for r in range(rounds):
         lib = arch.draw_blocks(spread=mech.M5_archive)
@@ -137,7 +137,7 @@ def mine_blind(oracles, mining_families: List[str], mech: Mechanisms,
                 arch.add_block(cand)
         # learn weights across the mining set (within-family specialisation)
         from .rsi import learn_weights
-        pol.weights = learn_weights(default_policy().weights, list(solved.values()))
+        pol.weights = learn_weights(broad_policy().weights, list(solved.values()))
     return arch
 
 
