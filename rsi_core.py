@@ -23,14 +23,16 @@ from __future__ import annotations
 import argparse
 
 from vcrsi.report import (run_demo, run_counterfactual_mode, run_transfer_mode,
-                          run_ablation_mode, run_solve_hard)
+                          run_ablation_mode, run_solve_hard,
+                          run_openended_mode, run_emergence_mode)
 from vcrsi.controls import run_controls
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="verified-code-rsi")
     ap.add_argument("--mode", choices=("demo", "counterfactual", "test",
-                                       "transfer", "ablation", "solve-hard"),
+                                       "transfer", "ablation", "solve-hard",
+                                       "openended", "emergence"),
                     default="demo")
     args = ap.parse_args()
     if args.mode == "demo":
@@ -43,6 +45,10 @@ def main() -> int:
         return run_transfer_mode()
     if args.mode == "ablation":
         return run_ablation_mode()
+    if args.mode == "openended":
+        return run_openended_mode()
+    if args.mode == "emergence":
+        return run_emergence_mode()
     if args.mode == "test":
         return run_controls()
     return 2

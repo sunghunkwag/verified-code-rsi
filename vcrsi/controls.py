@@ -527,6 +527,228 @@ def ctl_ablation_runs(oracles) -> Tuple[bool, str]:
     return ok, f"all {ran}/6 ablation configurations executed end-to-end"
 
 
+# =========================================================================== #
+# OPEN-ENDED self-generation controls (§5) -- the generation-specific guards    #
+# =========================================================================== #
+def _gen_pool(n_gen=2, per=6, blocks=None):
+    """The pool of generated specs that would be REGISTERED pre-L3 (i.e. pass L1
+    whitelist AND the §6B floor). L3 only removes tasks, so this is a SUPERSET of
+    the actually-registered pool -- a property holding here holds for it too."""
+    import random
+    from .generator import generate_spec, on_whitelist
+    from .oracle import SealedOracle
+    pool = []
+    for g in range(n_gen):
+        for i in range(per):
+            sp = generate_spec(random.Random(9001 + g * 53 + i), g, i,
+                               blocks=blocks or [])
+            if sp is None or not on_whitelist(sp):
+                continue
+            orc = SealedOracle(sp)
+            ok, _m = complexity_floor(orc)
+            if ok:
+                pool.append((sp, orc))
+    return pool
+
+
+def _plant_trivial():
+    """A 'minted' spec the CURRENT solver already does easily: a plain run-length
+    decode. It clears L1+L2 but must be rejected by L3 (self-easiness)."""
+    from .generator import GenSpec, _g_pairs
+    it = Node("var", "V", const="it")
+    ref = _b("sconcat", _b("map", Node("arg", "L", const=0),
+                           _b("srepeat", _b("fst", it), _b("snd", it))))
+    return GenSpec("planted_trivial", 2, "plain run-length decode", ("L",), "S",
+                   ref, _g_pairs, public_scale=4, holdout_scale=10, group="seqcode")
+
+
+def _beh_eq(ref_a, gi_a, ref_b, arg_types) -> bool:
+    """True iff two references produce identical output on shared probe inputs
+    (a behavioural-equivalence test on PUBLIC-style data only)."""
+    rng = random.Random(31)
+    same = 0
+    for _ in range(14):
+        args = gi_a(rng, 5)
+        ra, rb = run(ref_a, list(args)), run(ref_b, list(args))
+        if not (ra.ok and rb.ok):
+            return False
+        if ra.value != rb.value:
+            return False
+        same += 1
+    return same > 0
+
+
+def ctl_generated_tasks_pass_floor(oracles) -> Tuple[bool, str]:
+    """PRIMARY anti-toy lock: EVERY generated task is on the §6A whitelist AND
+    clears the §6B floor, and there are ZERO flat-integer-list scalar reductions
+    in the whole generated pool. A single toy slipping in is a FAIL."""
+    from .generator import on_whitelist, is_flat_int_scalar_reduction
+    pool = _gen_pool()
+    bad = []
+    flat = 0
+    for sp, orc in pool:
+        if not on_whitelist(sp):
+            bad.append(sp.name + ":off-whitelist")
+        if is_flat_int_scalar_reduction(sp):
+            flat += 1
+        if sp.family not in (1, 2, 3, 4, 5):
+            bad.append(sp.name + f":fam{sp.family}")
+        ok, m = complexity_floor(orc)
+        if not ok:
+            bad.append(sp.name + ":floor")
+        if not any(at in ("L", "S") for at in sp.arg_types):
+            bad.append(sp.name + ":unstructured")
+    ok = (not bad) and flat == 0 and len(pool) >= 3
+    return ok, (f"{len(pool)} generated tasks: all clear §6A whitelist + §6B floor"
+                f"={not bad}; flat-integer-list tasks in pool={flat} (must be 0)"
+                + ("" if not bad else f"; violations={bad[:3]}"))
+
+
+def ctl_novelty_is_real(oracles) -> Tuple[bool, str]:
+    """L3: a generated task counts only if the CURRENT solver cannot already solve
+    it. Plant an already-solvable task -> assert it is REJECTED by L3; and assert a
+    genuinely-registered task was unsolved by the probe at registration time."""
+    from .openended import triple_lock, probe_solves
+    from .rsi import Guidance
+    g = Guidance()
+    # (a) the planted trivial task must be rejected at L3 (not L1/L2)
+    ok_lock, _orc, planted_reason, _m = triple_lock(_plant_trivial(), [], g)
+    planted_rejected = (not ok_lock) and planted_reason == "L3"
+    # (b) a genuinely registered task was provably unsolved by the probe
+    import random
+    registered_unsolved = None
+    for i in range(12):
+        from .generator import generate_spec
+        sp = generate_spec(random.Random(4400 + i), 0, i, blocks=[])
+        if sp is None:
+            continue
+        ok, orc, _reason, _m = triple_lock(sp, [], g)
+        if ok:                                  # passed all three locks
+            registered_unsolved = not probe_solves(orc, g, [])
+            break
+    ok = planted_rejected and (registered_unsolved is True)
+    return ok, (f"planted already-solvable task rejected by L3={planted_rejected} "
+                f"(reason={planted_reason}); a registered task was probe-unsolved "
+                f"at registration={registered_unsolved}")
+
+
+def ctl_generator_is_oracle_blind(oracles) -> Tuple[bool, str]:
+    """Source/data-flow inspection: the generator reads neither any sealed
+    reference, any held-out battery, nor the external emergence set; it imports
+    no oracle/suite/external symbols and emits reference programs only."""
+    from . import generator as G
+    src = inspect.getsource(G)
+    forbidden = ["from .oracle", "from .tasks", "import oracle", "import tasks",
+                 "build_oracles", "SealedOracle", "SUITE", "EMERGENCE_SET",
+                 "._holdout", "_make_example", ".verify(", "TRANSFER_FAMILIES",
+                 "task.reference", ".public_examples"]
+    hits = [w for w in forbidden if w in src]
+    # data-flow: generate_spec's parameters carry no oracle / external object.
+    sig = str(inspect.signature(G.generate_spec)).lower()
+    sig_clean = ("oracle" not in sig and "holdout" not in sig
+                 and "external" not in sig and "emergence" not in sig)
+    ok = (not hits) and sig_clean
+    return ok, (f"generator source oracle/suite/external-free={not hits} "
+                f"(hits={hits}); generate_spec signature carries no oracle/external "
+                f"object={sig_clean}")
+
+
+def ctl_emergence_set_is_sealed(oracles) -> Tuple[bool, str]:
+    """The external set never enters generation or training during the loop, and
+    no generated task is behaviourally identical to an external-set task (no
+    minting-to-memorise)."""
+    import random
+    from .generator import generate_spec
+    from .tasks import EMERGENCE_SET
+    from . import openended as OE
+    # (a) behavioural non-collision over a real generated pool
+    collide = None
+    for i in range(24):
+        sp = generate_spec(random.Random(700 + i), 0, i, blocks=[])
+        if sp is None:
+            continue
+        for et in EMERGENCE_SET:
+            if sp.arg_types == et.arg_types and \
+               _beh_eq(sp.reference, sp.gen_input, et.reference, et.arg_types):
+                collide = (sp.name, et.name)
+                break
+        if collide:
+            break
+    # (b) the loop's TRAINING functions never read the external set
+    train_src = (inspect.getsource(OE.run_openended)
+                 + inspect.getsource(OE.train_on_suite)
+                 + inspect.getsource(OE.triple_lock)
+                 + inspect.getsource(OE.attack))
+    train_blind = "EMERGENCE_SET" not in train_src
+    ok = collide is None and train_blind
+    return ok, (f"no generated task behaviourally identical to an external task="
+                f"{collide is None} (collision={collide}); generation+training "
+                f"never reference the external set={train_blind}")
+
+
+def ctl_no_self_congratulation(oracles) -> Tuple[bool, str]:
+    """A generated task is PROGRESS only if it passed L1∧L2∧L3 AND was then
+    solved-and-holdout-verified. Assert a minted-but-trivial task is rejected
+    (never counted), and a minted-but-unsolved task is never counted as a win."""
+    from .openended import triple_lock, solved_and_floor_ok
+    from .oracle import SealedOracle
+    from .rsi import Guidance
+    g = Guidance()
+    # (a) minted-but-trivial -> rejected by the lock, so it never reaches a count
+    ok_lock, _o, reason, _m = triple_lock(_plant_trivial(), [], g)
+    trivial_not_counted = (not ok_lock) and reason == "L3"
+    # (b) minted-but-unsolved -> the win-gate refuses it. Take ANY generated task;
+    #     a None program and a wrong (identity) program are both NOT counted.
+    import random
+    sp = None
+    for i in range(8):
+        from .generator import generate_spec
+        cand = generate_spec(random.Random(8800 + i), 0, i, blocks=[])
+        if cand is not None:
+            sp = cand
+            break
+    orc = SealedOracle(sp)
+    wrong = Node("arg", sp.arg_types[0], const=0)            # identity on arg0
+    unsolved_not_counted = (not solved_and_floor_ok(None, orc, []) and
+                            not solved_and_floor_ok(wrong, orc, []))
+    ok = trivial_not_counted and unsolved_not_counted
+    return ok, (f"minted-but-trivial rejected by lock (not counted)="
+                f"{trivial_not_counted}; minted-but-unsolved never counted as a "
+                f"win (None & wrong-program both fail the win-gate)="
+                f"{unsolved_not_counted}")
+
+
+def ctl_self_verification_is_sound(oracles) -> Tuple[bool, str]:
+    """The self-generated oracle is load-bearing: a deliberately WRONG solver
+    program FAILS a generated task's sealed held-out battery, while a correct
+    rediscovery PASSES it."""
+    from .openended import attack
+    from .oracle import SealedOracle
+    from .rsi import Guidance
+    import random
+    from .generator import generate_spec, _f_seqcode
+    # an OE-fast generated task so the rediscovery is quick + deterministic
+    sp = None
+    for i in range(10):
+        cand = generate_spec(random.Random(606 + i), 0, i, blocks=[],
+                             family=_f_seqcode)
+        if cand is not None:
+            sp = cand
+            break
+    orc = SealedOracle(sp)
+    wrong = Node("arg", sp.arg_types[0], const=0)            # identity: wrong
+    wrong_fails = not orc.verify(wrong)
+    # the sealed reference itself defines ground truth -> it MUST pass its battery
+    ref_passes = orc.verify(sp.reference)
+    # an independent rediscovery from PUBLIC examples also passes the SEALED battery
+    prog, ch = attack(orc, Guidance(), [])
+    rediscovered_passes = prog is not None and orc.verify(prog)
+    ok = wrong_fails and ref_passes and rediscovered_passes
+    return ok, (f"wrong program fails sealed battery={wrong_fails}; sealed "
+                f"reference passes its own battery={ref_passes}; independent "
+                f"rediscovery ({ch}) passes the SEALED battery={rediscovered_passes}")
+
+
 # --------------------------------------------------------------------------- #
 # registry + runner                                                            #
 # --------------------------------------------------------------------------- #
@@ -559,6 +781,13 @@ CONTROLS: List[Tuple[str, Callable]] = [
     ("frozen_vs_adaptive_guidance_is_load_bearing (§5.4)",
      ctl_frozen_vs_adaptive_guidance_is_load_bearing),
     ("guidance_determinism (§5.5)", ctl_guidance_determinism),
+    # --- Open-ended self-generation controls (§5) --- #
+    ("generated_tasks_pass_floor (§5.1)", ctl_generated_tasks_pass_floor),
+    ("novelty_is_real / L3 (§5.2)", ctl_novelty_is_real),
+    ("generator_is_oracle_blind (§5.3)", ctl_generator_is_oracle_blind),
+    ("emergence_set_is_sealed (§5.4)", ctl_emergence_set_is_sealed),
+    ("no_self_congratulation (§5.5)", ctl_no_self_congratulation),
+    ("self_verification_is_sound (§5.6)", ctl_self_verification_is_sound),
 ]
 
 

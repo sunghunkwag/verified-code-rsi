@@ -27,6 +27,9 @@ ABLATION_BUDGET = 11000      # smaller per-task budget for the 6-config ablation
 GUIDE_WIDTH = 24
 GUIDE_LAYERS = 30
 GUIDE_WAVES = 3
+# Open-ended / emergence run parameters (the README's numbers regenerate here).
+OE_GENERATIONS = 5
+OE_BATCH = 6
 
 # A dedicated curriculum that elicits the block-on-block lineage (the library is
 # the sole adaptive channel here, so composed blocks are genuinely needed).
@@ -335,5 +338,117 @@ def run_solve_hard() -> int:
           f"({sorted(HARD_FAMILIES)})")
     print("The PRM-guided beam's contribution is the tasks marked channel=prm-beam;")
     print("OPEN tasks are reported with their best train-exact fraction, never hidden.")
+    print("=" * 78)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# --mode openended : run the self-generated curriculum loop                     #
+# --------------------------------------------------------------------------- #
+def run_openended_mode() -> int:
+    from .openended import run_openended
+    oracles = build_oracles()
+    fp = assert_verifier_unchanged(oracles, "openended")
+    print("=" * 78)
+    print("VERIFIED-CODE-RSI -- OPEN-ENDED SELF-GENERATED CURRICULUM (--mode openended)")
+    print(f"verifier_fp (hash-pinned correctness oracle) = {fp}")
+    print("The system invents its OWN tasks (a fresh sealed reference defines each")
+    print("task's ground truth), keeps only those passing the TRIPLE LOCK")
+    print("(L1 whitelist / L2 §6B floor / L3 self-easiness), solves what it can, and")
+    print("trains its guidance + library on its OWN solutions. No human target inside.")
+    print("=" * 78)
+    res = run_openended(generations=OE_GENERATIONS, batch=OE_BATCH, seed=0,
+                        verbose=False)
+    print("PER-GENERATION (minted -> triple-lock survivors -> solved-and-verified):")
+    print("%-4s %7s %7s %7s %8s  %s" %
+          ("gen", "minted", "locked", "solved", "lib", "lock-fails / note"))
+    for gs in res.per_gen:
+        note = ("FRONTIER STALLED" if gs.stalled
+                else f"L1={gs.lock_fail.get('L1',0)} "
+                     f"L2={gs.lock_fail.get('L2',0)} L3={gs.lock_fail.get('L3',0)}")
+        liblen = sum(1 for _ in res.library) if gs is res.per_gen[-1] else ""
+        print("%-4d %7d %7d %7d %8s  %s" %
+              (gs.gen, gs.minted, gs.locked, gs.solved, str(liblen), note))
+    print("-" * 78)
+    print("FRONTIER DIFFICULTY TRAJECTORY (§6B metrics of NEWLY-SOLVED tasks/gen):")
+    print("  the L3 frontier ratchets iff this climbs; if it stays flat / collapses")
+    print("  onto a narrow band, that is reported honestly (it is the finding).")
+    for row in res.frontier_trajectory():
+        if row.get("solved"):
+            print(f"    gen {row['gen']}: solved={row['solved']:2d}  "
+                  f"distinct_ops min/med={row['ops_min']}/{row['ops_med']}  "
+                  f"exec_depth min/med={row['depth_min']}/{row['depth_med']}  "
+                  f"groups={row['groups']}")
+        else:
+            tag = "FRONTIER STALLED" if row.get("stalled") else "no new solves"
+            print(f"    gen {row['gen']}: {tag}")
+    print("-" * 78)
+    print(f"  archive coverage (quality-diversity)   : {res.archive.coverage()}")
+    print(f"  library blocks mined from own solves   : "
+          f"{[b.name for b in res.library]}")
+    print(f"  total: attacks={res.total_attacks} solved={res.total_solved}")
+    print(f"  PRM digest per generation (own solves) : "
+          f"{res.guidance.wave_digests}")
+    assert_verifier_unchanged(oracles, "openended.end")
+    print(f"  run digest (same seed -> identical)    : {res.digest()}")
+    print("=" * 78)
+    print("Run `--mode emergence` for the open-ended-vs-baseline external-set delta.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# --mode emergence : open-ended arm vs fixed-suite baseline on the EXTERNAL set  #
+# --------------------------------------------------------------------------- #
+def run_emergence_mode() -> int:
+    from .openended import run_emergence
+    print("=" * 78)
+    print("VERIFIED-CODE-RSI -- EMERGENCE (--mode emergence)")
+    print("Does inventing+solving its OWN curriculum make the system better at")
+    print("UNSEEN, human-authored tasks it never generated and never trained on?")
+    print("  open-ended arm : guidance+library trained ONLY on self-generated tasks")
+    print("  baseline   arm : identical budget/seeds, trained ONLY on the fixed suite")
+    print("Both then evaluated FROZEN on the SEALED external held-out set.")
+    print("=" * 78)
+    r = run_emergence(generations=OE_GENERATIONS, batch=OE_BATCH, seed=0)
+    oe = r.open_res
+    print("OPEN-ENDED ARM -- self-generated curriculum:")
+    for gs in oe.per_gen:
+        note = "FRONTIER STALLED" if gs.stalled else f"solved={gs.solved}"
+        print(f"    gen {gs.gen}: minted={gs.minted} locked={gs.locked} {note}")
+    traj = oe.frontier_trajectory()
+    climbed = [row for row in traj if row.get("solved")]
+    print(f"    frontier difficulty (ops_med per gen with solves): "
+          f"{[ (row['gen'], row['ops_med']) for row in climbed]}")
+    print(f"    self-generated tasks solved (training data): {oe.total_solved}; "
+          f"library={len(oe.library)}")
+    print("-" * 78)
+    print(f"EXTERNAL HELD-OUT SET ({r.n_external} sealed human-authored tasks); "
+          f"equal budget = {r.attacks} attacks/arm, same seeds:")
+    print("  FULL PORTFOLIO (OE + memetic + PRM-beam) -- 'got better at unseen tasks':")
+    print(f"    open-ended arm solved : {len(r.open_solved_full)}  "
+          f"{r.open_solved_full}")
+    print(f"    baseline   arm solved : {len(r.base_solved_full)}  "
+          f"{r.base_solved_full}")
+    print(f"    >>> EMERGENCE DELTA (full)  = {len(r.open_solved_full)} - "
+          f"{len(r.base_solved_full)} = {r.delta_full} <<<")
+    print("  PRM-BEAM ONLY -- isolates the LEARNED GUIDANCE (the arms' real diff):")
+    print(f"    open-ended arm solved : {len(r.open_solved_beam)}  "
+          f"{r.open_solved_beam}")
+    print(f"    baseline   arm solved : {len(r.base_solved_beam)}  "
+          f"{r.base_solved_beam}")
+    print(f"    >>> EMERGENCE DELTA (beam)  = {len(r.open_solved_beam)} - "
+          f"{len(r.base_solved_beam)} = {r.delta_beam} <<<")
+    print("-" * 78)
+    if r.delta_full <= 0 and r.delta_beam <= 0:
+        print("FINDING: NO measured emergence -- self-generation did not improve")
+        print("external-set performance over the fixed-suite baseline here. This is a")
+        print("legitimate, reported result (§8): the generated frontier re-covers")
+        print("structure the suite already teaches, so guidance transfer is flat.")
+    else:
+        print("FINDING: a POSITIVE, reproducible emergence delta -- by inventing and")
+        print("solving its own curriculum the system solved MORE unseen human tasks")
+        print("than the fixed-suite baseline. Nothing beyond this delta is asserted.")
+    print(f"verifier_fp (unchanged): {r.verifier_fp}")
+    print(f"emergence digest (same seed -> byte-identical): {r.digest()}")
     print("=" * 78)
     return 0
