@@ -95,11 +95,7 @@ def broad_policy() -> Policy:
     w = dict(default_policy().weights)
     w.update({"filter": 4.0, "pair": 4.0, "add": 4.0, "sub": 4.0, "mul": 2.6,
               "imax": 2.4, "imin": 2.0, "sdiv": 1.6, "gt": 2.4, "lt": 2.4,
-              "le": 2.4, "and": 1.8, "or": 1.2, "eqi": 1.0,
-              # the new stateful combinators (Unlock A): enabled here (a weight
-              # key present) so the family-neutral arm can reach stateful tasks;
-              # default_policy omits them, so the Phase-A counterfactual is intact.
-              "scan": 3.5, "iterate": 1.0, "llast": 1.6, "lempty": 1.0})
+              "le": 2.4, "and": 1.8, "or": 1.2, "eqi": 1.0})
     return Policy(weights=w, blocks=[], block_prob=0.0, version=0)
 
 

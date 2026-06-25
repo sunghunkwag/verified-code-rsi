@@ -53,7 +53,7 @@ from .rsi import Guidance
 # high block-call probability finds a block-using solution FAST when one exists
 # (M1 abstraction-first); the bottom-up OE is a backup (it explodes with a large
 # library, so it gets a small budget).
-REACH_MEMETIC = 110_000
+REACH_MEMETIC = 70_000
 REACH_BLOCK_PROB = 0.5
 REACH_OE = 40_000
 
@@ -223,7 +223,7 @@ def measure_strong(res: OpenEndedResult, hard_suite: List[SealedOracle]
     # suite families. One credited capability is sufficient for the headline; the
     # cap keeps the measurement tractable and deterministic.
     minted_oracles = [SealedOracle(sp)
-                      for sp in _dedup_targets(res.reach_targets)[:8]]
+                      for sp in _dedup_targets(res.reach_targets)[:6]]
     out.reach_target_names = [o.task.name for o in minted_oracles]
     targets = minted_oracles + list(hard_suite)
 

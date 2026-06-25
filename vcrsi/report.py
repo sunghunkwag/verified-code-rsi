@@ -430,22 +430,31 @@ def run_openended_mode() -> int:
 # --mode emergence : open-ended arm vs fixed-suite baseline on the EXTERNAL set  #
 # --------------------------------------------------------------------------- #
 def run_emergence_mode() -> int:
-    from .openended import run_emergence
-    print("=" * 78)
+    # the steps are run inline (not via openended.run_emergence) so the STRONG
+    # headline prints + flushes BEFORE the slow weak-delta computation -- a long
+    # run that is interrupted still surfaces the result.
+    from .openended import (run_openended, train_on_suite, eval_on_external,
+                            EmergenceResult)
+    from .emergence import measure_strong
+    from .tasks import EMERGENCE_SET, SUITE_BY_NAME
+    fp = assert_verifier_unchanged(build_oracles(), "emergence.start")
+    print("=" * 78, flush=True)
     print("VERIFIED-CODE-RSI -- EMERGENCE (--mode emergence)")
     print("Does inventing+solving its OWN curriculum make the system better at")
     print("UNSEEN, human-authored tasks it never generated and never trained on?")
     print("  open-ended arm : guidance+library trained ONLY on self-generated tasks")
     print("  baseline   arm : identical budget/seeds, trained ONLY on the fixed suite")
     print("Both then evaluated FROZEN on the SEALED external held-out set.")
-    print("=" * 78)
-    r = run_emergence(generations=OE_GENERATIONS, batch=OE_BATCH, seed=0)
-    oe = r.open_res
+    print("=" * 78, flush=True)
+    oe = run_openended(generations=OE_GENERATIONS, batch=OE_BATCH, seed=0)
+    hard = [SealedOracle(SUITE_BY_NAME[n]) for n in
+            ("bracket_depths", "merge_intervals", "bytecode_interp")
+            if n in SUITE_BY_NAME]
+    s = measure_strong(oe, hard)
     # =================================================================== #
     # (STRONG) THE HEADLINE: invented-capability count, with proofs.       #
     # =================================================================== #
-    s = r.strong
-    print("=" * 78)
+    print("=" * 78, flush=True)
     print("(STRONG) INVENTED-CAPABILITY COUNT -- the headline (§3).")
     print("An abstraction is credited ONLY if it is (1) composite (irreducible to a")
     print("single given primitive), (2) load-bearing, (3) mined not pre-seeded, and")
@@ -468,6 +477,18 @@ def run_emergence_mode() -> int:
     print("  invented abstractions accumulate?")
     for tn, reached in sorted(s.hard_family_reach.items()):
         print(f"    {tn:18s} : {'REACHED' if reached else 'still OPEN'}")
+    print(f"  strong digest (same seed -> byte-identical): {s.digest()}", flush=True)
+    # --- now the slow weak-delta arm (the strong headline above is already out) -- #
+    n_attacks = max(oe.total_attacks, len(EMERGENCE_SET))
+    base_g, base_lib = train_on_suite(n_attacks, 0)
+    externals = [SealedOracle(t) for t in EMERGENCE_SET]
+    r = EmergenceResult(
+        open_res=oe,
+        open_solved_full=eval_on_external(externals, oe.guidance, oe.library, "full"),
+        base_solved_full=eval_on_external(externals, base_g, base_lib, "full"),
+        open_solved_beam=eval_on_external(externals, oe.guidance, oe.library, "beam"),
+        base_solved_beam=eval_on_external(externals, base_g, base_lib, "beam"),
+        n_external=len(EMERGENCE_SET), attacks=n_attacks, verifier_fp=fp, strong=s)
     print("=" * 78)
     print("(WEAK, retained) EXTERNAL-TRANSFER DELTA on the SEALED human-authored set:")
     print("OPEN-ENDED ARM -- self-generated curriculum:")
