@@ -29,7 +29,7 @@ deleted monolith, and the Phase-D self-generation layer (`generator.py` +
 From a fixed seeded run on this machine:
 
 ```
---mode test            : 29/29 anti-cheat controls PASS; verifier_fp unchanged
+--mode test            : 34/34 anti-cheat controls PASS; verifier_fp unchanged
 --mode counterfactual  : TWO measured deltas, equal budget/seeds --
    (a) LEARNED GUIDANCE (Phase C, solver self-improvement):
        frozen-guidance solves 0; adaptive-guidance (trained PRM + world model)
@@ -832,7 +832,7 @@ within reach of its own solutions, and that boundary is exactly where it stalls.
 | `reach_unlock_is_load_bearing` | for the proven scan-twice scenario, WITH the inner-scan block the portfolio solves it and WITHOUT it (library minus the block + dependents) the task is OPEN |
 
 All Phase-A/B/C/D controls still pass and `verifier_fp` is unchanged
-(`841c6f6277e7c8ef`).
+(`841c6f6277e7c8ef`): **34/34 controls PASS** (29 prior + 5 invention-specific).
 
 ## Phase E audit commands
 

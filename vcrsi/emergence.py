@@ -53,9 +53,9 @@ from .rsi import Guidance
 # high block-call probability finds a block-using solution FAST when one exists
 # (M1 abstraction-first); the bottom-up OE is a backup (it explodes with a large
 # library, so it gets a small budget).
-REACH_MEMETIC = 70_000
+REACH_MEMETIC = 65_000
 REACH_BLOCK_PROB = 0.5
-REACH_OE = 40_000
+REACH_OE = 35_000
 
 
 def _reach_attack(orc: SealedOracle, library: List[Block]
