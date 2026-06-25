@@ -77,6 +77,7 @@ _UNARY: Dict[str, Callable] = {
 
 @dataclass
 class _OpModel:
+    op: str
     arity: int
     memo: Dict[Tuple, Any] = field(default_factory=dict)
     obs: List[Tuple[Tuple, Any]] = field(default_factory=list)
@@ -88,25 +89,28 @@ class _OpModel:
             self.obs.append((args, result))
 
     def hypothesis(self) -> Optional[Tuple[str, Callable]]:
-        """The simplest declared hypothesis consistent with ALL observations, in
-        a fixed order; None if nothing fits (op stays memo-only)."""
+        """The simplest declared hypothesis consistent with ALL observations AND
+        fuzz-validated against the real interpreter on edge inputs, in a fixed
+        order; None if nothing fits (op stays memo-only). The fuzz validation is
+        what keeps a prediction HONEST -- e.g. ``srepeat`` matches ``a*b`` on small
+        observed counts but the interpreter clamps huge counts, so the ``mul``
+        hypothesis is rejected and ``srepeat`` stays memo-only."""
         if len(self.obs) < MIN_OBS:
             return None
-        # const(k)
         results = [r for _a, r in self.obs]
         if all(r == results[0] for r in results):
             k = results[0]
-            return ("const", lambda *_a, _k=k: _k)
-        if self.arity == 1:
-            for name in ("identity", "proj_fst", "proj_snd", "inc", "dec",
-                         "neg", "not", "len"):
-                if self._fits(_UNARY[name]):
-                    return (name, _UNARY[name])
-        elif self.arity == 2:
-            for name in ("add", "sub", "mul", "max", "min", "eq", "lt", "le",
-                         "gt", "and", "or"):
-                if self._fits(_BINARY[name]):
-                    return (name, _BINARY[name])
+            cand = ("const", lambda *_a, _k=k: _k)
+            return cand if self._fuzz_ok(cand[1]) else None
+        family = (_UNARY if self.arity == 1 else _BINARY if self.arity == 2 else {})
+        order = (("identity", "proj_fst", "proj_snd", "inc", "dec", "neg", "not",
+                  "len") if self.arity == 1 else
+                 ("add", "sub", "mul", "max", "min", "eq", "lt", "le", "gt",
+                  "and", "or"))
+        for name in order:
+            fn = family[name]
+            if self._fits(fn) and self._fuzz_ok(fn):
+                return (name, fn)
         return None
 
     def _fits(self, fn: Callable) -> bool:
@@ -114,6 +118,25 @@ class _OpModel:
             ok, val = _safe(fn, args)
             if not ok or val != result:
                 return False
+        return True
+
+    def _fuzz_ok(self, fn: Callable) -> bool:
+        """A hypothesis is trusted only if it matches the REAL interpreter on edge
+        inputs derived from the observed argument types (0, negatives, a huge
+        value) -- so an observation-consistent but semantically-wrong hypothesis
+        (clamping, overflow, type coercion) is rejected rather than fabricated."""
+        for args, _r in self.obs[:4]:
+            for i, a in enumerate(args):
+                if isinstance(a, bool) or not isinstance(a, int):
+                    continue
+                for v in (0, -3, 9999):
+                    pert = tuple(v if j == i else x for j, x in enumerate(args))
+                    real_ok, real = op_step(self.op, pert)
+                    fn_ok, val = _safe(fn, pert)
+                    if real_ok and (not fn_ok or val != real):
+                        return False
+                    if (not real_ok) and fn_ok:
+                        return False
         return True
 
 
@@ -134,14 +157,15 @@ class OpSemanticsModel:
         (the real interpreter) and record (args -> result)."""
         ok, val = op_step(op, args)
         if op not in self._ops:
-            self._ops[op] = _OpModel(arity=len(args))
+            self._ops[op] = _OpModel(op=op, arity=len(args))
         if ok:
             self._ops[op].record(args, val)
         return ok, val
 
     def observe_program(self, prog: Node, argslist: List[List[Any]]) -> None:
         """Run a program for real and record every primitive op application it
-        performs, so the model learns op semantics from the system's own search."""
+        performs -- INCLUDING those inside map/filter/foldl bodies -- so the model
+        learns op semantics from the system's own solved programs."""
         for args in argslist:
             self._observe(prog, args, {})
 
@@ -152,15 +176,42 @@ class OpSemanticsModel:
         if op == "arg":
             return args[node.const]
         if op == "var":
-            return env.get(node.const)
-        if op in ("map", "filter", "foldl", "ifx", "call", "param"):
-            r = run(node, args, env=env or None)          # structure: act for real
+            return env.get(node.const, ABSTAIN)
+        if op == "ifx":
+            cond = self._observe(node.kids[0], args, env)
+            if cond is ABSTAIN:
+                return ABSTAIN
+            return self._observe(node.kids[1] if cond else node.kids[2], args, env)
+        if op == "map":
+            src = self._observe(node.kids[0], args, env)
+            if not isinstance(src, list):
+                return ABSTAIN
+            out = []
+            for e in src:
+                out.append(self._observe(node.kids[1], args, {**env, "it": e}))
+            return out
+        if op == "filter":
+            src = self._observe(node.kids[0], args, env)
+            if not isinstance(src, list):
+                return ABSTAIN
+            return [e for e in src
+                    if self._observe(node.kids[1], args, {**env, "it": e})]
+        if op == "foldl":
+            src = self._observe(node.kids[0], args, env)
+            acc = self._observe(node.kids[1], args, env)
+            if not isinstance(src, list):
+                return ABSTAIN
+            for e in src:
+                acc = self._observe(node.kids[2], args, {**env, "it": e, "acc": acc})
+            return acc
+        if op in ("call", "param"):
+            r = run(node, args, env=env or None)          # blocks: act for real
             return r.value if r.ok else ABSTAIN
+        # a primitive op application: observe (args -> result) and return it
         vals = tuple(self._observe(k, args, env) for k in node.kids)
         if any(v is ABSTAIN for v in vals):
             return ABSTAIN
-        self.act(op, vals)
-        ok, v = op_step(op, vals)
+        ok, v = self.act(op, vals)
         return v if ok else ABSTAIN
 
     # ---- prediction: hypothesis, else memo, else honest abstention -------- #
