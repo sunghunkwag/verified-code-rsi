@@ -237,7 +237,12 @@ class _Gen:
         if self.blocks and depth > 0 and self.rng.random() < self.policy.block_prob:
             cands = [b for b in self.blocks if tmatch(b.rtype, rtype)]
             if cands:
-                blk = self.rng.choice(cands)
+                # M1 -- abstraction-first: prefer the NEWEST blocks (a block built
+                # on an earlier block is enumerated as one unit, so nested structure
+                # accumulates instead of being re-derived from primitives).
+                cands.sort(key=lambda b: (b.created_round, b.name), reverse=True)
+                idx = min(int(self.rng.expovariate(1.0)), len(cands) - 1)
+                blk = cands[idx]
                 kids = tuple(self.gen(pt, depth - 1, scope) for pt in blk.ptypes)
                 return Node("call", blk.rtype, kids, blk.name)
         leafc = self._leaf_cands(rtype, scope)

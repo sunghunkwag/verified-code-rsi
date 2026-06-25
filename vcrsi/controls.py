@@ -777,6 +777,178 @@ def ctl_self_verification_is_sound(oracles) -> Tuple[bool, str]:
                 f"rediscovery ({ch}) passes the SEALED battery={rediscovered_passes}")
 
 
+# =========================================================================== #
+# INVENTION / EMERGENCE controls (§5) -- guard the STRONG measurement           #
+# =========================================================================== #
+def _pb(op, *kids, const=None):
+    from .ir import PRIMS as P, COMB_RTYPE as C
+    rt = C.get(op) or (P[op][0] if op in P else "V")
+    return Node(op, rt, tuple(kids), const)
+
+
+def _scaled_width_source():
+    """A solved project reference: map(a0, mul(width, k)) -- the M3 minting source."""
+    from .tasks import _ref_scaled_widths, _gen_ivk
+    return _ref_scaled_widths(), ("L", "I"), "L", _gen_ivk
+
+
+def _midpoint_twice_scenario():
+    """Reconstruct the proven reach-unlock: a scan_twice minted task whose flat
+    program is beyond search reach, plus the inner-scan block that makes it small."""
+    from .tasks import _ref_midpoints, _gen_iv
+    from .generator import mint_curriculum
+    ref = _ref_midpoints()
+    verified = [{"ref": ref, "arg_types": ("L",), "out_type": "L",
+                 "group": "project", "gen_input": _gen_iv}]
+    minted = mint_curriculum(verified, set(), n=8)
+    tw = [sp for sp in minted if "twice" in sp.name and "add" in sp.name]
+    if not tw:
+        return None, None
+    sp = tw[0]
+    # the inner running-sum-of-midpoints scan, as a one-param block (B(a0:L))
+    P0 = Node("param", "L", const=0)
+    it = Node("var", "V", const="it")
+    acc = Node("var", "V", const="acc")
+    inner = _pb("scan", P0, Node("lit", "I", const=0),
+                _pb("add", acc, _pb("sdiv", _pb("add", _pb("fst", it),
+                                                 _pb("snd", it)),
+                                    Node("lit", "I", const=2))))
+    blk = Block("RS", ("L",), inner, "L", created_round=1, origin="encapsulated")
+    return sp, blk
+
+
+def ctl_invented_is_genuinely_composite(oracles) -> Tuple[bool, str]:
+    """§5.1: every b credited as emergent is irreducible to a single given
+    primitive. Plant a block that EQUALS one primitive and assert is_composite (the
+    gate measure_strong uses) rejects it; a genuine nesting passes."""
+    from .library import is_composite
+    p0 = Node("param", "L", const=0)
+    one_prim = Block("ONE", ("L",), _pb("lrev", p0), "L", origin="mined")
+    pP = Node("param", "P", const=0)
+    genuine = Block("W", ("P",), _pb("sub", _pb("snd", pP), _pb("fst", pP)), "I",
+                    origin="mined")
+    rej = not is_composite(one_prim)
+    acc = is_composite(genuine)
+    # source check: measure_strong actually gates credit on is_composite
+    import inspect
+    from . import emergence as E
+    gated = "is_composite(b" in inspect.getsource(E.measure_strong)
+    ok = rej and acc and gated
+    return ok, (f"single-primitive block credited-as-composite={not rej} (must be "
+                f"False); genuine nesting composite={acc}; measure_strong gates on "
+                f"is_composite={gated}")
+
+
+def ctl_invented_is_not_given(oracles) -> Tuple[bool, str]:
+    """§5.2: credited b were MINED from the system's own solutions, never pre-seeded.
+    The seed library is empty (disjoint from given primitives), and measure_strong
+    skips any block not of origin mined/encapsulated -- assert a planted PRE-SEEDED
+    block is not eligible, and the given-vocab is disjoint from block names."""
+    from .emergence import GIVEN_VOCAB, measure_strong
+    from .openended import OpenEndedResult
+    seeded = Block("add", ("I", "I"),
+                   _pb("add", Node("param", "I", const=0), Node("param", "I", const=1)),
+                   "I", origin="seed")
+    # a seed-origin block is never eligible for credit (origin gate)
+    res = OpenEndedResult()
+    res.library = [seeded]
+    res.seed_blocks = ["add"]
+    strong = measure_strong(res, [])          # no reach targets -> count must be 0
+    not_credited = strong.count == 0
+    # given vocabulary (op names) is disjoint from mined block names (B0/B1/RS...)
+    disjoint = not (GIVEN_VOCAB & {"B0", "B1", "RS", "W"})
+    ok = not_credited and disjoint and "add" in GIVEN_VOCAB
+    return ok, (f"pre-seeded block credited={not not_credited} (must be False); "
+                f"given-vocab disjoint from mined names={disjoint}; "
+                f"|given_vocab|={len(GIVEN_VOCAB)}")
+
+
+def ctl_minting_not_shallow(oracles) -> Tuple[bool, str]:
+    """§5.3: the minted curriculum changes computational structure. Every minted
+    task introduces a stateful accumulator absent in its source AND is behaviourally
+    distant from it; the shallow inc/square post-wrap is NOT accepted; the triple
+    lock (whitelist + §6B) holds; and ZERO flat-integer-list tasks are in the pool."""
+    from .generator import (mint_curriculum, nonshallow_change, mint_shallow,
+                            behavioural_distance, is_flat_int_scalar_reduction,
+                            on_whitelist)
+    from .complexity import complexity_floor
+    ref, at, ot, gi = _scaled_width_source()
+    verified = [{"ref": ref, "arg_types": at, "out_type": ot, "group": "project",
+                 "gen_input": gi}]
+    minted = mint_curriculum(verified, set(), n=8)
+    if not minted:
+        return False, "no tasks minted (cannot assert non-shallowness)"
+    all_structural = all(nonshallow_change(ref, sp.reference) for sp in minted)
+    all_distant = all(behavioural_distance(ref, sp.reference, sp.gen_input) >= 0.5
+                      for sp in minted)
+    flat = sum(1 for sp in minted if is_flat_int_scalar_reduction(sp))
+    lock_ok = all(on_whitelist(sp) and complexity_floor(SealedOracle(sp))[0]
+                  for sp in minted)
+    # the shallow post-wrapper is correctly identified as NON-structural
+    shallow = list(mint_shallow(ref, at, ot))
+    shallow_rejected = all(not nonshallow_change(ref, c) for c, _o, _t in shallow)
+    ok = (all_structural and all_distant and flat == 0 and lock_ok
+          and shallow_rejected and len(minted) >= 1)
+    return ok, (f"minted {len(minted)}: all change structure={all_structural}; "
+                f"all behaviourally distant(>=0.5)={all_distant}; flat-int tasks="
+                f"{flat} (must be 0); triple-lock(whitelist+floor)={lock_ok}; shallow "
+                f"inc post-wrap correctly NOT structural={shallow_rejected}")
+
+
+def ctl_abstraction_anti_trivial(oracles) -> Tuple[bool, str]:
+    """§5.4: the input-coupled guard stops compression-gaming. A planted constant-
+    pushing macro scores 0 on anti_cheat and is rejected by library admission; an
+    input-coupled abstraction is not."""
+    from .library import input_coupled, score_abstraction
+    from .openended import _admit_blocks, M2_SCORE_MIN
+    const_macro = Block("C", (),
+                        _pb("add", Node("lit", "I", const=1), Node("lit", "I", const=2)),
+                        "I", origin="mined")
+    coupled = Block("W", ("P",),
+                    _pb("sub", _pb("snd", Node("param", "P", const=0)),
+                        _pb("fst", Node("param", "P", const=0))), "I", origin="mined")
+    ic_const = input_coupled(const_macro)
+    ic_coupled = input_coupled(coupled)
+    s_const = score_abstraction(const_macro, [(ref, "project") for ref in
+                                              [Node("arg", "L", const=0)]])
+    # functional: the admission path rejects the constant macro (input_coupled<=0)
+    lib = []
+    prog = _pb("add", _pb("add", Node("lit", "I", const=1), Node("lit", "I", const=2)),
+               Node("lit", "I", const=0))
+    admitted = _admit_blocks(lib, prog, 0, [(prog, "project")])
+    const_not_admitted = all(input_coupled(b) > 0 for b in admitted)
+    ok = (ic_const == 0.0 and ic_coupled > 0.0
+          and s_const["anti_cheat"] == 0.0 and const_not_admitted)
+    return ok, (f"constant macro input_coupled={ic_const} anti_cheat="
+                f"{s_const['anti_cheat']} (both 0); coupled abstraction input_coupled="
+                f"{ic_coupled:.2f}; admission never keeps a 0-coupled block="
+                f"{const_not_admitted}")
+
+
+def ctl_reach_unlock_is_load_bearing(oracles) -> Tuple[bool, str]:
+    """§5.5: for a block claimed to enable reach, removing it reverts the unlocked
+    task to OPEN at equal budget. Reconstruct the proven scan_twice scenario: WITH
+    the inner-scan block the portfolio solves it; WITHOUT it (library minus the
+    block + dependents) the task is OPEN."""
+    from .emergence import reach_unlock, library_without, _reach_attack
+    from .rsi import Guidance
+    sp, blk = _midpoint_twice_scenario()
+    if sp is None:
+        return False, "could not construct the scan_twice scenario"
+    orc = SealedOracle(sp)
+    library = [blk]
+    g = Guidance()
+    proof = reach_unlock(blk, orc, library, g)
+    unlocked = proof is not None
+    # explicit without-arm check (defence in depth): library minus blk -> OPEN
+    without = library_without(library, blk.name)
+    open_without = _reach_attack(orc, without) is None
+    ok = unlocked and open_without and without == []
+    return ok, (f"WITH block solved + load-bearing={unlocked} "
+                f"(uses {proof['used_blocks'] if proof else None}); WITHOUT block "
+                f"(library->{[b.name for b in without]}) task OPEN={open_without}")
+
+
 # --------------------------------------------------------------------------- #
 # registry + runner                                                            #
 # --------------------------------------------------------------------------- #
@@ -816,6 +988,12 @@ CONTROLS: List[Tuple[str, Callable]] = [
     ("emergence_set_is_sealed (§5.4)", ctl_emergence_set_is_sealed),
     ("no_self_congratulation (§5.5)", ctl_no_self_congratulation),
     ("self_verification_is_sound (§5.6)", ctl_self_verification_is_sound),
+    # --- INVENTION / EMERGENCE controls (§5) --- #
+    ("invented_is_genuinely_composite (§5.1)", ctl_invented_is_genuinely_composite),
+    ("invented_is_not_given (§5.2)", ctl_invented_is_not_given),
+    ("minting_not_shallow (§5.3)", ctl_minting_not_shallow),
+    ("abstraction_anti_trivial (§5.4)", ctl_abstraction_anti_trivial),
+    ("reach_unlock_is_load_bearing (§5.5)", ctl_reach_unlock_is_load_bearing),
 ]
 
 

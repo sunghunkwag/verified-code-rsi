@@ -170,11 +170,25 @@ def oe_solve(view, blocks: Optional[List[Block]] = None, max_size: int = 10,
 
     def grow(bank: _Bank, sigfn):
         new = []
+        import itertools
+        # M1 -- ABSTRACTION-FIRST: enumerate the NEWEST library blocks before the
+        # base primitives, so a block (possibly built on an earlier block) is
+        # reached as ONE unit and is the surviving representative for its
+        # behaviour. A block whose flat expansion exceeds max_size is reachable
+        # ONLY through the call, so abstraction genuinely extends OE's reach.
+        for b in sorted(blocks, key=lambda bk: (bk.created_round, bk.name),
+                        reverse=True):
+            pools = [bank.pool(pt, cap) for pt in b.ptypes]
+            if any(not p for p in pools):
+                continue
+            for combo in itertools.product(*pools):
+                node = Node("call", b.rtype, tuple(c[0] for c in combo), b.name)
+                if node.size() <= max_size:
+                    new.append((node, b.rtype, sigfn(node)))
         for name, (rt, ats, _fn) in PRIMS.items():
             pools = [bank.pool(at, cap) for at in ats]
             if any(not p for p in pools):
                 continue
-            import itertools
             cnt = 0
             for combo in itertools.product(*pools):
                 node = Node(name, rt, tuple(c[0] for c in combo))
@@ -183,15 +197,6 @@ def oe_solve(view, blocks: Optional[List[Block]] = None, max_size: int = 10,
                 cnt += 1
                 if cnt >= cap * 6:
                     break
-        for b in blocks:
-            pools = [bank.pool(pt, cap) for pt in b.ptypes]
-            if any(not p for p in pools):
-                continue
-            import itertools
-            for combo in itertools.product(*pools):
-                node = Node("call", b.rtype, tuple(c[0] for c in combo), b.name)
-                if node.size() <= max_size:
-                    new.append((node, b.rtype, sigfn(node)))
         for node, rt, s in new:
             bank.add(node, rt, s)
 

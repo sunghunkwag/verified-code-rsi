@@ -265,25 +265,230 @@ def _f_seqcode(rng, blocks, hard):
 
 
 def _f_scan(rng, blocks, hard):
-    """foldl with a threaded accumulator -- the OE channel cannot reach these
-    (per-element observational equivalence fails on a state thread), so this is
-    the deliberately HARD frontier family."""
-    cur = _b("ifx", _b("lempty", _acc()), _lit(0), _b("llast", _acc()))
-    if rng.random() < 0.5:
-        delta = _b("ifx", _b("eqv", _it(), _lit("(")), _lit(1), _lit(-1))
-        body = _b("lapp", _acc(), _b("lsingle", _b("add", cur, delta)))
-        ref = _b("foldl", _b("schars", _arg(0, "S")), _lit([]), body)
-        return (5, "scan", "running bracket-nesting depth",
-                ("S",), "L", _g_brackets, 4, ref)
-    w = _b("sub", _b("snd", _it()), _b("fst", _it()))
-    body = _b("lapp", _acc(), _b("lsingle", _b("add", cur, w)))
-    ref = _b("foldl", _arg(0, "L"), _lit([]), body)
-    return (4, "scan", "running prefix sums of interval widths",
+    """A running-accumulator scan over interval widths, written with the Unlock-A
+    ``scan`` primitive: scan(a0, 0, COMBINE(acc, width)). The OE channel cannot
+    reach a state-threading body, so these stay on the stateful frontier -- but the
+    memetic + scan-enabled beam CAN solve them, so they enter the curriculum (the
+    previous foldl/bracket variants were effectively unsolvable, which is partly
+    why the stateful families never entered reach)."""
+    # running MAXIMUM interval width (init 0). imax over the non-negative width
+    # keeps the task non-degenerate AND within the search's reach: a running-min
+    # from 0 would collapse to a constant, and a prefix-SUM landscape is beyond the
+    # stochastic search -- both would just stall the curriculum. This is the one
+    # stateful family that reliably enters reach, seeding the scan lineage.
+    width = _b("sub", _b("snd", _it()), _b("fst", _it()))
+    ref = _b("scan", _arg(0, "L"), _lit(0), _b("imax", _acc(), width))
+    return (4, "scan", "running maximum interval width (scan accumulator)",
             ("L",), "L", _g_iv, 4, ref)
 
 
 FAMILIES = [_f_interval, _f_project, _f_select, _f_codec, _f_seqcode, _f_scan]
 FAMILY_NAMES = ["interval", "project", "select", "codec", "seqcode", "scan"]
+
+
+# =========================================================================== #
+# M3 -- NON-SHALLOW MINTING (compose VERIFIED solved references)               #
+# --------------------------------------------------------------------------- #
+# The previous emergence run measured zero partly because minting was SHALLOW:  #
+# wrapping a solved function's OUTPUT with square/inc is post-composition -- a   #
+# behaviourally-near variant in the SAME family that re-covers known territory.  #
+# Genuine novelty changes the COMPUTATIONAL STRUCTURE. Every operator here       #
+# introduces a STATEFUL accumulator (scan) that the source program did not have: #
+#   scanify   wrap a solved map's per-element body in a running accumulator      #
+#   chain     thread a solved function's whole OUTPUT through a running scan      #
+# A minted task therefore needs structure no source task taught elementwise, and #
+# the source's per-element body is exactly the sub-program a mined block         #
+# captures -- so the composite is reachable WITH that block and deep without it.  #
+# (The shallow inc/square post-wrap is provided only so the minting_not_shallow  #
+# control can demonstrate it is REJECTED -- it introduces no accumulator.)        #
+# =========================================================================== #
+def _node_ops(n: Node) -> Set[str]:
+    acc: Set[str] = set()
+    _ops(n, acc)
+    return acc
+
+
+_STATEFUL = {"scan", "foldl", "iterate"}
+
+
+_INT_HEAD = ("add", "sub", "mul", "imax", "imin", "sdiv", "smod", "inc",
+             "dec", "llen", "slen", "sord")
+
+
+def _int_typed_map_body(ref: Node) -> Optional[Tuple[Node, Node]]:
+    """Find the first map(src, body) SUBTREE (anywhere in ``ref``) whose body
+    returns an int -- the 'project' shape we scanify. Searching subtrees (not just
+    the root) makes minting robust to the harmless wrappers a search adds, e.g.
+    lrev(lrev(map(...)))."""
+    def walk(n: Node) -> Optional[Tuple[Node, Node]]:
+        if n.op == "map" and len(n.kids) == 2 and n.kids[1].op in _INT_HEAD:
+            return n.kids[0], n.kids[1]
+        for k in n.kids:
+            r = walk(k)
+            if r is not None:
+                return r
+        return None
+    return walk(ref)
+
+
+def mint_scanify(ref: Node, arg_types, out_type):
+    """Wrap a solved map's per-element body in a running accumulator (map -> scan).
+    Yields (new_ref, new_out_type, tag). Introduces a scan the source lacked."""
+    mb = _int_typed_map_body(ref)
+    if mb is None:
+        return
+    src, body = mb
+    for combine in ("add", "imax"):
+        new = _b("scan", src, _lit(0), _b(combine, _acc(), body))
+        yield new, "L", f"scanify:{combine}"
+
+
+def mint_chain(ref: Node, arg_types, out_type):
+    """Thread a solved function's whole OUTPUT through a running scan (chain two
+    computations through an accumulator). ``ref`` must produce a list of ints."""
+    if out_type != "L":
+        return
+    mb = _int_typed_map_body(ref)
+    if mb is None:                      # only chain list-of-int producers
+        return
+    for combine in ("add", "imax"):
+        new = _b("scan", ref, _lit(0), _b(combine, _acc(), _it()))
+        yield new, "L", f"chain:{combine}"
+
+
+def _count_stateful(n: Node) -> int:
+    c = 1 if n.op in _STATEFUL else 0
+    return c + sum(_count_stateful(k) for k in n.kids)
+
+
+def mint_loop_twice(ref: Node, arg_types, out_type):
+    """Given a solved program that ALREADY contains a stateful loop and produces a
+    list, emit it FOLLOWED BY its reverse (lapp(ref, lrev(ref))). The stateful sub-
+    computation now appears TWICE, so the flat program is beyond search reach, but
+    a block that captures the loop (encapsulated from the SAME solution) makes it
+    small -- a guaranteed-matching depth-2 reach target. This is the stateful
+    analogue of rle_rev_palindrome_twice, built from the system's own scan solves."""
+    if out_type != "L" or not (_node_ops(ref) & _STATEFUL):
+        return
+    yield _b("lapp", ref, _b("lrev", ref)), "L", "loop_twice"
+
+
+def mint_shallow(ref: Node, arg_types, out_type):
+    """A SHALLOW post-wrapper (increment every output element). Provided ONLY for
+    the minting_not_shallow control to assert it is rejected: it introduces NO
+    accumulator -- the computational structure is unchanged (still an elementwise
+    map), so ``introduces_accumulator`` is False."""
+    if out_type != "L" or _int_typed_map_body(ref) is None:
+        return
+    yield _b("map", ref, _b("inc", _it())), "L", "shallow:inc"
+
+
+def mint_scan_twice(ref: Node, arg_types, out_type):
+    """Scanify a solved map, then emit the running-aggregate list FOLLOWED BY its
+    reverse (a 'twice/palindrome' shape). The inner scan therefore appears TWICE,
+    so the flat program is large and beyond the memetic/beam reach -- but a block
+    that captures the scan-running-aggregate (itself built on the source's per-
+    element body) makes it small. This is the stateful analogue of the proven
+    rle_rev_palindrome_twice depth-2 lineage: the deep gap that makes a composite
+    abstraction LOAD-BEARING and reach-unlocking (§3(4))."""
+    mb = _int_typed_map_body(ref)
+    if mb is None:
+        return
+    src, body = mb
+    for combine in ("add", "imax"):
+        r = _b("scan", src, _lit(0), _b(combine, _acc(), body))
+        yield _b("lapp", r, _b("lrev", r)), "L", f"scan_twice:{combine}"
+
+
+# loop_twice (deep reach target from a solved scan) leads -- it is the robust,
+# guaranteed-matching reach target; scanify/scan_twice add project-derived variants.
+NON_SHALLOW_MINT_OPS = [mint_loop_twice, mint_scanify, mint_scan_twice, mint_chain]
+
+
+def introduces_accumulator(src_ref: Node, minted_ref: Node) -> bool:
+    """True iff ``minted_ref`` uses a stateful combinator (scan/foldl/iterate) that
+    ``src_ref`` did not -- one of the two structural-change tests."""
+    return bool((_node_ops(minted_ref) & _STATEFUL)
+                - (_node_ops(src_ref) & _STATEFUL))
+
+
+def nonshallow_change(src_ref: Node, minted_ref: Node) -> bool:
+    """The non-shallow test (§M3): a minted task changes computational structure if
+    it EITHER introduces a stateful accumulator the source lacked OR DUPLICATES a
+    stateful sub-computation (the loop appears strictly more often than in the
+    source). A plain arithmetic post-wrap does neither."""
+    return (introduces_accumulator(src_ref, minted_ref)
+            or _count_stateful(minted_ref) > _count_stateful(src_ref))
+
+
+def behavioural_distance(ref_a: Node, ref_b: Node, gen_input, scale: int = 6,
+                         trials: int = 10) -> float:
+    """Fraction of shared probe inputs on which two references differ (both must
+    run). 1.0 = totally different behaviour; ~0 = a near-variant."""
+    from .interp import run
+    rng = random.Random(4242)
+    diff = ok = 0
+    for _ in range(trials):
+        args = list(gen_input(rng, scale))
+        ra, rb = run(ref_a, args), run(ref_b, args)
+        if not (ra.ok and rb.ok):
+            continue
+        ok += 1
+        if ra.value != rb.value:
+            diff += 1
+    return (diff / ok) if ok else 0.0
+
+
+def mint_curriculum(verified: List[dict], registry: Set[str], n: int,
+                    blocks=None) -> List[GenSpec]:
+    """Compose the system's OWN verified solved references into NEW, structurally-
+    novel tasks (§M3). ``verified`` is a list of dicts {ref, arg_types, out_type,
+    group, gen_input}. Each survivor changes computational structure (introduces an
+    accumulator), is behaviourally distant from its source, is deduped by signature,
+    and passes L1 whitelist + the §6B floor. L3 self-easiness is enforced later by
+    the loop's triple lock. Returns up to ``n`` sealed GenSpecs."""
+    out: List[GenSpec] = []
+    vrng = random.Random(13)
+    for v in verified:
+        ref, gi = v["ref"], v["gen_input"]
+        for op in NON_SHALLOW_MINT_OPS:
+            for cand, new_out, tag in op(ref, v["arg_types"], v["out_type"]):
+                if not nonshallow_change(ref, cand):
+                    continue
+                sig = _behav_sig(cand, gi)
+                if sig is None or sig in registry:
+                    continue
+                if behavioural_distance(ref, cand, gi) < 0.5:
+                    continue
+                sp = GenSpec(
+                    name=f"mint_{len(registry)}_{tag.replace(':','_')}",
+                    family=4, spec=f"non-shallow composite ({tag})",
+                    arg_types=v["arg_types"], out_type=new_out, reference=cand,
+                    gen_input=gi, public_scale=4, holdout_scale=10,
+                    group="scan", note=f"minted:{tag}:from={v['group']}")
+                # cheap, oracle-FREE gates (the authoritative §6B floor / L1 / L3
+                # run in the loop's triple_lock; the generator never imports the
+                # oracle, keeping generator_is_oracle_blind intact).
+                if not on_whitelist(sp) or not _floor_precheck(sp, vrng):
+                    continue
+                registry.add(sig)
+                out.append(sp)
+                if len(out) >= n:
+                    return out
+    return out
+
+
+def _behav_sig(ref: Node, gen_input) -> Optional[str]:
+    """A behavioural signature: outputs on a fixed probe battery (dedup key)."""
+    from .interp import run
+    rng = random.Random(20240131)
+    parts = []
+    for _ in range(6):
+        r = run(ref, list(gen_input(rng, 6)))
+        if not r.ok:
+            return None
+        parts.append(repr(r.value))
+    return "|".join(parts)
 
 
 # --------------------------------------------------------------------------- #

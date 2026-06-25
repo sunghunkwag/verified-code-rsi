@@ -21,10 +21,11 @@ Nothing here reads tasks, references or held-out batteries.
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from .ir import Block, Node, pp, PRIMS, COMB_RTYPE
+from .ir import Block, Node, pp, PRIMS, COMB_RTYPE, COMBINATORS, inline
 
 
 # --------------------------------------------------------------------------- #
@@ -110,7 +111,8 @@ def stateful_policy() -> Policy:
     left untouched so those measured results are unchanged."""
     w = dict(broad_policy().weights)
     w.update({"scan": 4.5, "iterate": 1.2, "acc": 2.4, "imax": 3.2, "imin": 2.8,
-              "add": 4.0, "sub": 4.0, "llast": 1.8, "lempty": 1.2})
+              "add": 4.0, "sub": 4.0, "mul": 3.2, "sdiv": 2.4, "llast": 1.8,
+              "lempty": 1.2})
     return Policy(weights=w, blocks=[], block_prob=0.0, version=0)
 
 
@@ -365,3 +367,133 @@ def _fresh_name(idx: int, taken: set) -> str:
         if nm not in taken:
             return nm
         idx += 1
+
+
+# =========================================================================== #
+# M1 -- ABSTRACTION-FIRST ENUMERATION ORDER                                    #
+# --------------------------------------------------------------------------- #
+# When the solver enumerates programs it should reach the NEWEST learned blocks #
+# before the base primitives, so a block built from earlier blocks is reached    #
+# as ONE unit and higher-order / nested structure accumulates instead of being   #
+# re-derived from scratch. This helper returns that order; the OE and memetic     #
+# channels consult it (see search_oe.grow / search._Gen).                         #
+# =========================================================================== #
+def build_enumeration_order(blocks: List[Block], base_ops: List[str]) -> List[str]:
+    """Newest library blocks first (by created_round desc, then reverse insertion),
+    then the base ops. Returns a flat list of NAMES (block names + op names)."""
+    ranked = sorted(range(len(blocks)),
+                    key=lambda i: (blocks[i].created_round, i), reverse=True)
+    return [blocks[i].name for i in ranked] + list(base_ops)
+
+
+# =========================================================================== #
+# M2 -- MULTI-OBJECTIVE ABSTRACTION SCORE                                      #
+# --------------------------------------------------------------------------- #
+# Score a candidate abstraction on three terms (compression / transfer / anti-  #
+# cheat). The open-ended loop admits a block to the library only on this score   #
+# AND the empirical META-GATE (a held-out reach gain with no regression). The     #
+# anti-cheat (input-coupled) term is load-bearing: it stops the system "inventing" #
+# trivial constant macros to inflate compression. Family labels are used for       #
+# MEASUREMENT only (curation), never inside the search.                            #
+# =========================================================================== #
+_PLUMBING = frozenset({"lit", "arg", "var", "param"})
+
+
+def _op_nodes(n: Node) -> int:
+    """Count of genuine operator nodes (a primitive or combinator application),
+    excluding plumbing leaves and (already-inlined) calls."""
+    c = 1 if (n.op not in _PLUMBING and n.op != "call") else 0
+    return c + sum(_op_nodes(k) for k in n.kids)
+
+
+def expand_block(block: Block, block_map: Dict[str, Block]) -> Node:
+    """The block's body with every nested ``call`` inlined -> its real, irreducible
+    computation (the same expansion the complexity floor measures over)."""
+    try:
+        return inline(block.body, block_map)
+    except Exception:
+        return block.body
+
+
+def is_composite(block: Block, block_map: Optional[Dict[str, Block]] = None) -> bool:
+    """§3(1): ``block`` is COMPOSITE iff it is NOT expressible as a single given IR
+    primitive -- its inlined body nests >= 2 operator applications. A block whose
+    body is one primitive over its params (e.g. ``add($0,$1)``) is NOT composite."""
+    flat = expand_block(block, block_map or {})
+    return _op_nodes(flat) >= 2
+
+
+def _structural_size(n: Node) -> int:
+    """Count of non-plumbing nodes in a body WITHOUT inlining -- a ``call`` counts
+    as one node. Distinguishes a genuine composition from a trivial alias."""
+    c = 0 if n.op in _PLUMBING else 1
+    return c + sum(_structural_size(k) for k in n.kids)
+
+
+def is_nontrivial_abstraction(block: Block) -> bool:
+    """Reject trivial library entries: a block whose body is a single primitive/
+    combinator or a bare alias of ONE other block (e.g. ``B5($0,$1)`` or
+    ``lrev(B7($0,$1))``) adds no structure -- it only pollutes the enumeration
+    order. A useful abstraction composes >= 2 structural nodes."""
+    return _structural_size(block.body) >= 2 and block.body.op != "call"
+
+
+def _leaf_kinds(n: Node, lits: List[int], params: List[int]) -> None:
+    if n.op in ("lit", "var"):
+        lits.append(1)
+    elif n.op in ("param", "arg"):
+        params.append(1)
+    for k in n.kids:
+        _leaf_kinds(k, lits, params)
+
+
+def input_coupled(block: Block) -> float:
+    """Fraction of the block body's LEAVES that consume an input (a param/arg)
+    rather than a pushed constant. A constant-pushing macro scores 0 -> its
+    anti_cheat term is 0 -> it cannot be credited (control abstraction_anti_trivial)."""
+    lits: List[int] = []
+    params: List[int] = []
+    _leaf_kinds(block.body, lits, params)
+    tot = len(lits) + len(params)
+    return (len(params) / tot) if tot else 0.0
+
+
+def block_occurs_in(block: Block, prog: Node) -> bool:
+    """True iff ``block``'s body-pattern matches SOME subtree of ``prog`` (the
+    token-stream of the solution CONTAINS the block)."""
+    def walk(n: Node) -> bool:
+        binding: Dict[int, Node] = {}
+        if _match(n, block.body, binding):
+            npar = _nparams(block.body)
+            if set(binding.keys()) <= set(range(npar)):
+                return True
+        return any(walk(k) for k in n.kids)
+    return walk(prog)
+
+
+def score_abstraction(block: Block, adopted: List[Tuple[Node, str]],
+                      block_map: Optional[Dict[str, Block]] = None) -> dict:
+    """M2 multi-objective score of one candidate abstraction. ``adopted`` is the
+    list of (solution_program, family) pairs the loop has accumulated. Returns the
+    component terms + the final score in [0,1]."""
+    bm = block_map or {}
+    if not adopted:
+        return {"capture": 0.0, "diversity": 0.0, "short": 0.0, "compression": 0.0,
+                "transfer": 0.0, "input_coupled": input_coupled(block),
+                "anti_cheat": input_coupled(block), "score": 0.0, "n_fams": 0,
+                "captured": 0}
+    captured = [(p, fam) for p, fam in adopted if block_occurs_in(block, p)]
+    capture = len(captured) / len(adopted)
+    fams = {fam for _p, fam in captured}
+    all_fams = {fam for _p, fam in adopted}
+    diversity = min(1.0, len(fams) / 5.0)
+    short = 1.0 / (1.0 + math.log1p(expand_block(block, bm).size()) / 10.0)
+    compression = min(1.0, 0.65 * capture + 0.20 * diversity + 0.15 * short)
+    transfer = (len(fams) / len(all_fams)) if all_fams else 0.0
+    ic = input_coupled(block)
+    anti_cheat = ic
+    score = 0.5 * compression + 0.3 * transfer + 0.2 * anti_cheat
+    return {"capture": capture, "diversity": diversity, "short": short,
+            "compression": compression, "transfer": transfer,
+            "input_coupled": ic, "anti_cheat": anti_cheat, "score": score,
+            "n_fams": len(fams), "captured": len(captured)}
