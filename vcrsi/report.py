@@ -28,8 +28,8 @@ GUIDE_WIDTH = 24
 GUIDE_LAYERS = 30
 GUIDE_WAVES = 3
 # Open-ended / emergence run parameters (the README's numbers regenerate here).
-OE_GENERATIONS = 5
-OE_BATCH = 6
+OE_GENERATIONS = 4
+OE_BATCH = 5
 
 # A dedicated curriculum that elicits the block-on-block lineage (the library is
 # the sole adaptive channel here, so composed blocks are genuinely needed).

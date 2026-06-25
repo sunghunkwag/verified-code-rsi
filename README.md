@@ -17,8 +17,10 @@ by 2–5 instructions of a stack VM whose opcodes were already high-level
 reductions). The toy domain is deleted. What survives is the one genuinely
 verification-grounded discipline of that monolith's native-kernel section:
 *build the verifier first, datafy the candidate, verify bit-exact, measure
-against a frozen counterfactual.* This system is **2,944 lines** (5.8% of the
-original).
+against a frozen counterfactual.* This system is **~5,400 logical lines**
+(~6,900 physical incl. comments) across Phases A–D — roughly a tenth of the
+deleted monolith, and the Phase-D self-generation layer (`generator.py` +
+`openended.py`) is ~735 of them: a small fraction, not a balloon.
 
 ---
 
@@ -27,7 +29,7 @@ original).
 From a fixed seeded run on this machine:
 
 ```
---mode test            : 23/23 anti-cheat controls PASS; verifier_fp unchanged
+--mode test            : 29/29 anti-cheat controls PASS; verifier_fp unchanged
 --mode counterfactual  : TWO measured deltas, equal budget/seeds --
    (a) LEARNED GUIDANCE (Phase C, solver self-improvement):
        frozen-guidance solves 0; adaptive-guidance (trained PRM + world model)
@@ -37,14 +39,32 @@ From a fixed seeded run on this machine:
 --mode solve-hard      : full portfolio on the suite; the three hard families
                          (bytecode_interp, merge_intervals, bracket_depths)
                          remain OPEN (0/3 cracked), reported with best-partial
+--mode openended       : the system invents its OWN tasks (a fresh sealed
+                         reference defines each), keeps only those passing the
+                         TRIPLE LOCK, solves what it can, trains on its OWN solves;
+                         the L3 frontier ratchets (ops 5->6, depth 9->20) but
+                         never reaches the stateful families -- reported honestly
+--mode emergence       : open-ended-vs-baseline delta on a SEALED external set --
+                         DELTA = -1 (full) / 0 (guidance-only): NO emergence (§8).
+                         Reported, not faked: self-generation did not transfer here
 --mode demo            : complexity table; solved/OPEN lists; library lineage;
                          PRM digest evolution + world-model coverage
 ```
 
-**Phase C** (latest) makes the recursive self-improvement act on the *solver's own
-learned search guidance* — a process-reward model guiding a beam search, trained on
-the system's own solved programs. Delta (a) is the solver-self-improvement claim:
-the trained guidance synthesises a whole family of multi-step programs the frozen
+**Phase D** (latest) removes the human-given target: the system **generates its own
+tasks** (a synthesised, sealed reference program *defines* each task's ground truth),
+keeps only those passing a machine-checked **triple lock** (whitelist / §6B floor /
+self-easiness), solves what it can, and trains on its own solutions. We then measure
+emergence against a **sealed external held-out set** the system never generates or
+trains on. The honest measured result here is **NO emergence** (delta −1 full / 0
+guidance-only): the mechanism works and stays toy-free, but the self-generated
+frontier re-covers what the curated suite already teaches and cannot reach the
+stateful families — a legitimate, reported §8 finding, not a manufactured win.
+
+**Phase C** makes the recursive self-improvement act on the *solver's own learned
+search guidance* — a process-reward model guiding a beam search, trained on the
+system's own solved programs. Delta (a) is the solver-self-improvement claim: the
+trained guidance synthesises a whole family of multi-step programs the frozen
 guidance cannot, and generalises to unseen tasks. The genuinely-hard stateful-`foldl`
 families remain OPEN and are reported as such (Phase C section explains exactly why).
 Phase A/B (within-family reuse + cross-family transfer) is unchanged below.
@@ -471,7 +491,8 @@ observable) plus a wider beam — compatible with this architecture, not impleme
 | `guidance_determinism` | same seed → byte-identical PRM digest and adoption log |
 
 All Phase-A and Phase-B controls still pass and `verifier_fp` is unchanged
-(`841c6f6277e7c8ef`): **23/23 controls PASS**.
+(`841c6f6277e7c8ef`): **23/23 controls PASS** at Phase C (Phase D adds 6 more →
+**29/29** total; see the Phase D section).
 
 ## Phase C audit commands
 
@@ -480,4 +501,166 @@ All Phase-A and Phase-B controls still pass and `verifier_fp` is unchanged
 | `python rsi_core.py --mode solve-hard` | full portfolio on the suite incl. the hard families; per-task solved/OPEN, solving channel, and best-partial for OPEN tasks |
 | `python rsi_core.py --mode counterfactual` | **both** deltas: (a) adaptive-vs-frozen *guidance* (solver self-improvement), (b) with-vs-without *library*; PRM digest evolution; world-model coverage |
 | `python rsi_core.py --mode demo` | + PRM digest evolution across waves and world-model coverage |
-| `python rsi_core.py --mode test` | all 23 controls incl. the 5 guidance-specific ones |
+| `python rsi_core.py --mode test` | all 29 controls incl. the 5 guidance-specific and 6 self-generation-specific ones |
+
+---
+
+# Phase D — open-ended self-generated curriculum (does un-designed capability EMERGE?)
+
+Through Phase C every target was **human-given**. Phase D removes that: the system
+**generates its own tasks**, solves them, learns from them, and we measure whether
+capability it was *never told to acquire* emerges — operationalised as: **does a
+system that ran the open-ended self-generated loop solve more human-held-out,
+never-generated tasks than a baseline that did not?**
+
+## The honest bound (stated first, not hidden)
+
+Self-generation does **not** transcend the verifiable domain. A generated task is
+only real because its correctness can be checked, so the generator produces tasks
+whose oracle the **existing sealed machinery** can construct: it synthesises a NEW
+**reference program** in the IR, and that program's input→output behaviour *defines*
+the task's ground truth. "Emergence" here means **capability arising from
+self-directed exploration within the verifiable domain — measured, not magic.** This
+is not a singularity button; it is the only form of open-ended emergence that can be
+made honest.
+
+## The mechanism — self-generated tasks that are self-verifying (`generator.py`)
+
+```
+generate_task():
+    fam   = pick a family from the §6A whitelist
+    ref   = SYNTHESISE A NEW REFERENCE PROGRAM in fam's type signature
+            (mutation/composition over the IR + inlined library blocks)
+    if not complexity_floor(ref): discard                 # L2
+    seal(ref); holdout = { (x, run(ref,x)) for fresh x }  # the self-generated oracle
+    public = a few (x, run(ref,x)) examples               # all the solver sees
+    return Task(fam, public, sealed_ref, sealed_holdout)
+```
+
+The reference is **sealed** (the solver never sees it); the held-out battery is the
+existing `SealedOracle` running that reference on fresh inputs. The solver must
+**rediscover a behaviourally-equivalent program from public examples** and pass the
+sealed battery — a wrong program fails it (`self_verification_is_sound`). References
+are **block-free pure IR** so the oracle runs them standalone; library blocks
+influence generation only via *inlining*, keeping references runnable. The generator
+is **oracle-blind**: it imports `ir`/`interp` only and emits reference programs —
+never reading any other task's sealed reference, any held-out battery, or the
+external set (`generator_is_oracle_blind`).
+
+## The triple lock against toy self-generation (all machine-checked)
+
+Open-endedness makes "retreat to an easy task and self-congratulate" a
+self-amplifying failure. Three locks make it structurally impossible; a task counts
+only if it passes **all three**:
+
+- **L1 — whitelist:** `fam` ∈ §6A, input is **structured** (list of pairs/intervals,
+  a string); any flat-integer-list scalar reduction is rejected at birth
+  (`generated_tasks_pass_floor` asserts **zero** in the whole pool).
+- **L2 — §6B floor:** the reference clears `distinct_ops≥5`, a loop, recursion-or-
+  aux-structure, and `exec_depth≥6` — **computed** from its AST + trace, never
+  asserted.
+- **L3 — self-easiness ban:** valid **only if the current solver, at a LOW probe
+  budget, cannot already solve it.** The easier the minted task, the more certainly
+  it is already-solvable and thrown away — self-congratulation is impossible
+  (`novelty_is_real`, `no_self_congratulation`).
+
+The L3 frontier **ratchets** because the probe (low budget) and the attack (high
+budget) share the **same improving** guidance + library: as they improve, the probe
+rejects more easy tasks (floor rises) while the attack cracks harder ones (ceiling
+rises).
+
+## What actually happened (real run, `--mode openended`, seed 0, 4 generations × batch 5)
+
+```
+gen  minted  locked(triple-lock)  solved-and-verified   lock-fails
+0       5            5                   2               L1=0 L2=0 L3=0
+1       5            4                   2               L1=0 L2=0 L3=1
+2       5            4                   0               L1=0 L2=0 L3=1
+3       5            5                   2               L1=0 L2=0 L3=0
+
+FRONTIER DIFFICULTY TRAJECTORY (§6B metrics of NEWLY-SOLVED tasks/gen)
+  gen 0: solved 2  distinct_ops med=5  exec_depth med=9   groups=[project]
+  gen 1: solved 2  distinct_ops med=6  exec_depth med=20  groups=[project, seqcode]
+  gen 2: no new solves (the registered tasks were too hard for the attack)
+  gen 3: solved 2  distinct_ops med=5  exec_depth med=9   groups=[project]
+archive: 3 filled cells spanning 2 families {project, seqcode}; library: 6 blocks
+total: attacks=18, solved=6;  run digest 1242df7d11318f64 (same seed → identical)
+```
+
+The mechanism works exactly as designed and **stays toy-free**: every registered
+task is on the whitelist, clears the §6B floor, and is structured — **zero
+flat-integer-list tasks** in the entire pool. **L3 begins rejecting** already-solvable
+tasks once the guidance + library improve (gen 1–2), and gen 1 reaches a **depth-20
+seqcode composition** — the frontier *does* ratchet onto harder *instances*. But it
+**oscillates and never breaks into the stateful families**: the generator mints
+`select`/`codec`/`scan` (foldl) tasks that pass the floor and the lock, yet the
+solver portfolio never cracks them, so newly-solved tasks stay inside
+`project`+`seqcode`. This is the §0/§8 honest bound made visible: **the frontier
+cannot reach the stateful families** at this IR/solver's level.
+
+## The emergence measurement (`--mode emergence`, seed 0, equal budget = 18 attacks/arm)
+
+The external held-out set is **8 human-authored tasks** in `tasks.py`
+(`ext_*`), kept out of `SUITE` (so `verifier_fp` is unchanged), never generated and
+never trained on. Both arms train with the **same machinery and the same 18
+attacks** at the same seeds, then evaluate **frozen** on the external set.
+
+```
+EXTERNAL SET (8 sealed tasks)              open-ended arm     fixed-suite baseline
+FULL PORTFOLIO (OE + memetic + PRM-beam)        3                    4
+   open : ext_decode_sortrev, ext_rle_thrice, ext_span_scaled
+   base : + ext_double_width                                   >>> DELTA full = -1
+PRM-BEAM ONLY (isolates the learned guidance)   2                    2
+   both : ext_decode_sortrev, ext_span_scaled                  >>> DELTA beam =  0
+```
+
+### The result, stated plainly: NO emergence (a legitimate, reported finding)
+
+**The emergence delta is ≤ 0.** Self-generation did **not** make the system better at
+unseen human tasks here — on the full portfolio it was **−1** (the baseline solved
+one *more*), and on the guidance-isolating beam it was a flat **0**. Per §8 this is
+reported, not hidden, faked, or tuned away. The mechanism is sound (the controls
+prove it); the *transfer* simply is not there, and the measurements say exactly why:
+
+1. **The generator only reaches re-combinations the suite already teaches.** Within
+   the solver's narrow reachable band (`project`+`seqcode`), the self-generated
+   curriculum re-covers structure the fixed suite *already* contains — so guidance
+   trained on it learns nothing the suite-trained baseline lacks (beam delta = 0,
+   both solve the same two externals).
+2. **The fixed suite is a richer, hand-curated curriculum.** It is larger and spans
+   more `interval`/`project`/`select` shapes than 18 self-generated attacks produce,
+   so its mined **library** (9 blocks vs 6) cracks one extra external (`ext_double_width`)
+   via OE/memetic — hence the full-portfolio delta is **negative**, not zero.
+3. **The frontier never reaches the stateful (`foldl`) families.** The external
+   `scan`/`codec`/`select` tasks stay OPEN for *both* arms, so the hardest externals
+   contribute 0 to either side — there is no headroom for self-generation to win on.
+
+The honest one-line conclusion: **open-ended self-generation works mechanically and
+stays toy-free, but produces no measured capability transfer to unseen tasks here —
+because the self-generated frontier re-covers what the curated suite already teaches
+and cannot break into the stateful families the solver can't reach.** A manufactured
+"singularity" was the one unforgivable failure; this measured ≤0 is the correct
+deliverable.
+
+## Phase D anti-cheat controls (all in `--mode test`, all passing)
+
+| control | what it proves |
+|---|---|
+| `generated_tasks_pass_floor` | every generated task is on the §6A whitelist AND clears §6B; **zero** flat-integer-list scalar reductions in the whole generated pool (the primary anti-toy lock) |
+| `novelty_is_real` (L3) | a planted already-solvable task is **rejected** by L3; a registered task was provably unsolved by the probe at registration |
+| `generator_is_oracle_blind` | source/data-flow: the generator reads no sealed reference, no held-out battery, no external set; it emits reference programs only |
+| `emergence_set_is_sealed` | no generated task is behaviourally identical to an external task (no minting-to-memorise); generation+training never reference the external set |
+| `no_self_congratulation` | progress counts only after L1∧L2∧L3 **and** a solved-and-holdout-verified program; minted-but-trivial and minted-but-unsolved tasks are never counted |
+| `self_verification_is_sound` | a deliberately wrong program FAILS a generated task's sealed battery; an independent rediscovery PASSES it (the self-generated oracle is load-bearing) |
+
+All Phase-A/B/C controls still pass and `verifier_fp` is unchanged
+(`841c6f6277e7c8ef`): **29/29 controls PASS**.
+
+## Phase D audit commands
+
+| command | what it shows |
+|---|---|
+| `python rsi_core.py --mode openended` | per-generation minted→triple-lock→solved, the frontier difficulty trajectory, archive coverage, library, and a reproducible run digest |
+| `python rsi_core.py --mode emergence` | the open-ended-vs-baseline external-set delta (full portfolio and guidance-isolating beam), equal budget/seeds, reproducible digest |
+| `python rsi_core.py --mode test` | all 29 controls incl. the 6 self-generation-specific ones |
+

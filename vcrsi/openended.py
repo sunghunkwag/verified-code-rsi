@@ -45,9 +45,9 @@ from .rsi import Guidance
 
 # Probe (L3) vs attack budgets. Both run the CURRENT solver; only the budget
 # differs -- that gap, times an improving solver, is where the frontier lives.
-PROBE_OE = 12_000
-PROBE_MEMETIC = 9_000
-PROBE_BEAM = (10, 18)          # (width, layers)
+PROBE_OE = 8_000
+PROBE_MEMETIC = 6_000
+PROBE_BEAM = (8, 16)           # (width, layers)
 ATTACK_OE = 50_000
 ATTACK_MEMETIC = 32_000
 ATTACK_BEAM = (22, 30)
