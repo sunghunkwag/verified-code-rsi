@@ -94,25 +94,46 @@ def broad_policy() -> Policy:
     w = dict(default_policy().weights)
     w.update({"filter": 4.0, "pair": 4.0, "add": 4.0, "sub": 4.0, "mul": 2.6,
               "imax": 2.4, "imin": 2.0, "sdiv": 1.6, "gt": 2.4, "lt": 2.4,
-              "le": 2.4, "and": 1.8, "or": 1.2, "eqi": 1.0})
+              "le": 2.4, "and": 1.8, "or": 1.2, "eqi": 1.0,
+              # the new stateful combinators (Unlock A): enabled here (a weight
+              # key present) so the family-neutral arm can reach stateful tasks;
+              # default_policy omits them, so the Phase-A counterfactual is intact.
+              "scan": 3.5, "iterate": 1.0, "llast": 1.6, "lempty": 1.0})
+    return Policy(weights=w, blocks=[], block_prob=0.0, version=0)
+
+
+def stateful_policy() -> Policy:
+    """broad_policy + a stronger prior on the stateful combinators and the int/pair
+    accessors their bodies need (acc, imax/imin, sub/add). Used by the open-ended
+    loop and solve-hard so the scan families are reliably within the memetic
+    channel's reach; the global broad_policy (used by the transfer experiment) is
+    left untouched so those measured results are unchanged."""
+    w = dict(broad_policy().weights)
+    w.update({"scan": 4.5, "iterate": 1.2, "acc": 2.4, "imax": 3.2, "imin": 2.8,
+              "add": 4.0, "sub": 4.0, "llast": 1.8, "lempty": 1.2})
     return Policy(weights=w, blocks=[], block_prob=0.0, version=0)
 
 
 # --------------------------------------------------------------------------- #
 # Free-variable analysis (a var is free in T if its binder is outside T)        #
 # --------------------------------------------------------------------------- #
+def _binder_scope(op: str, i: int, bound: frozenset) -> frozenset:
+    """Extend ``bound`` with the loop variables a combinator binds in child ``i``.
+    map/filter bind ``it`` in the body (kid 1); foldl/scan/iterate bind ``it`` AND
+    ``acc`` in the body (kid 2)."""
+    if op in ("map", "filter") and i == 1:
+        return bound | {"it"}
+    if op in ("foldl", "scan", "iterate") and i == 2:
+        return bound | {"it", "acc"}
+    return bound
+
+
 def free_vars(n: Node, bound: frozenset = frozenset()) -> set:
     if n.op == "var" and n.const not in bound:
         return {n.const}
     res: set = set()
     for i, k in enumerate(n.kids):
-        if n.op in ("map", "filter") and i == 1:
-            b2 = bound | {"it"}
-        elif n.op == "foldl" and i == 2:
-            b2 = bound | {"it", "acc"}
-        else:
-            b2 = bound
-        res |= free_vars(k, b2)
+        res |= free_vars(k, _binder_scope(n.op, i, bound))
     return res
 
 
@@ -138,13 +159,7 @@ def _abstractable_leaves(n: Node, bound: frozenset, acc: List[Node]) -> None:
         acc.append(n)
         return
     for i, k in enumerate(n.kids):
-        if n.op in ("map", "filter") and i == 1:
-            b2 = bound | {"it"}
-        elif n.op == "foldl" and i == 2:
-            b2 = bound | {"it", "acc"}
-        else:
-            b2 = bound
-        _abstractable_leaves(k, b2, acc)
+        _abstractable_leaves(k, _binder_scope(n.op, i, bound), acc)
 
 
 def _leaf_key(leaf: Node) -> Tuple:
@@ -179,13 +194,7 @@ def abstract_fragment(frag: Node) -> Optional[Tuple[Node, Tuple[str, ...], Tuple
             return n
         kids = []
         for i, k in enumerate(n.kids):
-            if n.op in ("map", "filter") and i == 1:
-                b2 = bound | {"it"}
-            elif n.op == "foldl" and i == 2:
-                b2 = bound | {"it", "acc"}
-            else:
-                b2 = bound
-            kids.append(rebuild(k, b2))
+            kids.append(rebuild(k, _binder_scope(n.op, i, bound)))
         return Node(n.op, n.rtype, tuple(kids), n.const)
 
     body = rebuild(frag, frozenset())

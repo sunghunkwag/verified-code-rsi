@@ -32,10 +32,10 @@ EXEC_DEPTH_MIN = 6
 MIN_SOLUTION_OPS = 5     # adopted-program floor (distinct non-trivial ops)
 
 _PLUMBING = {"lit", "arg", "var", "param"}
-_LOOPS = {"map", "filter", "foldl"}
+_LOOPS = {"map", "filter", "foldl", "scan", "iterate"}
 # ops that allocate/return a NEW container not taken verbatim from input
 _CONSTRUCTORS = {"cons", "lapp", "lsingle", "lrange", "pair", "sconcat",
-                 "srepeat", "schars", "map", "filter", "ltake", "ldrop"}
+                 "srepeat", "schars", "map", "filter", "scan", "ltake", "ldrop"}
 
 
 def _distinct_ops(n: Node, acc: Set[str]) -> None:

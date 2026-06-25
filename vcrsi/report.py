@@ -12,7 +12,7 @@ from .counterfactual import (run_counterfactual, DEFAULT_ORDER,
                              run_guidance_counterfactual, GUIDANCE_ORDER)
 from .search_oe import oe_solve
 from .search import synthesize
-from .library import broad_policy
+from .library import broad_policy, stateful_policy
 from .prm import PRM
 from .prm_beam import prm_beam_synthesize
 
@@ -280,13 +280,15 @@ def _portfolio_attack(orc, guidance: Guidance):
     p = oe_solve(view, blocks=[], max_size=12, eval_budget=90_000)
     if p is not None and orc.verify(p) and adopted_program_ops(p, {}) >= MIN_SOLUTION_OPS:
         return p, "oe", 1.0
-    # channel 2: memetic / stochastic
-    p, _st = synthesize(view, broad_policy(), 35_000, 7)
+    # channel 2: memetic / stochastic (stateful prior -> scan families reachable)
+    p, _st = synthesize(view, stateful_policy(), 45_000, 7)
     if p is not None and orc.verify(p) and adopted_program_ops(p, {}) >= MIN_SOLUTION_OPS:
         return p, "memetic", 1.0
-    # channel 3: PRM-guided beam (adaptive guidance)
+    # channel 3: PRM-guided beam (adaptive guidance) -- scan frame enabled so the
+    # stateful families are within the beam's reach.
     p, st = prm_beam_synthesize(view, guidance.prm, [], width=GUIDE_WIDTH,
-                                max_layers=GUIDE_LAYERS, verify=orc.verify)
+                                max_layers=GUIDE_LAYERS, verify=orc.verify,
+                                enable_scan=True)
     if p is not None and orc.verify(p) and adopted_program_ops(p, {}) >= MIN_SOLUTION_OPS:
         return p, "prm-beam", 1.0
     return None, "", st.best_partial

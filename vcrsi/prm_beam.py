@@ -78,7 +78,8 @@ class Frame:
         return "B" if self.comb == "filter" else "V"
 
     def binds(self) -> FrozenSet[str]:
-        return frozenset({"it", "acc"}) if self.comb == "foldl" else frozenset({"it"})
+        return (frozenset({"it", "acc"}) if self.comb in ("foldl", "scan")
+                else frozenset({"it"}))
 
 
 @dataclass(frozen=True)
@@ -114,9 +115,11 @@ class BeamCtx:
     blocks: List[Block]
     block_map: Dict[str, Block]
     train: List[Tuple[Tuple[Any, ...], Any]]
+    enable_scan: bool = False          # offer the scan frame (Unlock A) when True
 
 
-def make_ctx(view, blocks: Optional[List[Block]] = None) -> BeamCtx:
+def make_ctx(view, blocks: Optional[List[Block]] = None,
+             enable_scan: bool = False) -> BeamCtx:
     prob = problem_from_public(view)
     blocks = list(blocks or [])
     return BeamCtx(
@@ -125,7 +128,8 @@ def make_ctx(view, blocks: Optional[List[Block]] = None) -> BeamCtx:
         arg_is_list=tuple(t == "L" for t in prob.arg_types),
         comps=prob.pair_comps, blocks=blocks,
         block_map={b.name: b for b in blocks},
-        train=[(tuple(a), y) for a, y in view.public_examples[:K_TRAIN]])
+        train=[(tuple(a), y) for a, y in view.public_examples[:K_TRAIN]],
+        enable_scan=enable_scan)
 
 
 # --------------------------------------------------------------------------- #
@@ -143,7 +147,7 @@ def _scope_leaves(prefix: Prefix, ctx: BeamCtx) -> List[Sub]:
     if fr.it_t == "P":
         out.append(Sub(Node("fst", ctx.comps[0], (it,)), ctx.comps[0], frozenset({"it"})))
         out.append(Sub(Node("snd", ctx.comps[1], (it,)), ctx.comps[1], frozenset({"it"})))
-    if fr.comb == "foldl":
+    if fr.comb in ("foldl", "scan"):
         ac = Node("var", fr.acc_t, const="acc")
         out.append(Sub(ac, fr.acc_t, frozenset({"acc"})))
         if fr.acc_t == "P":
@@ -239,6 +243,12 @@ def _expand(prefix: Prefix, ctx: BeamCtx) -> List[Prefix]:
             fr = Frame("foldl", src, init, it_t, init.rtype, base)
             out.append(Prefix(prefix.stack[:-2], (fr,), prefix.ntok + 1,
                               prefix.used_block))
+            # scan: same opening obligation as foldl (src + init), but returns the
+            # running-accumulator LIST. Offered only when the context enables it.
+            if ctx.enable_scan:
+                frs = Frame("scan", src, init, it_t, init.rtype, base)
+                out.append(Prefix(prefix.stack[:-2], (frs,), prefix.ntok + 1,
+                                  prefix.used_block))
 
     # --- close the open frame --------------------------------------------- #
     if prefix.frames:
@@ -259,6 +269,8 @@ def _build_comb(fr: Frame, body: Sub) -> Tuple[Node, str]:
         return Node("map", "L", (fr.src.node, body.node)), "L"
     if fr.comb == "filter":
         return Node("filter", "L", (fr.src.node, body.node)), "L"
+    if fr.comb == "scan":
+        return Node("scan", "L", (fr.src.node, fr.init.node, body.node)), "L"
     return (Node("foldl", fr.acc_t, (fr.src.node, fr.init.node, body.node)),
             fr.acc_t)
 
@@ -411,7 +423,7 @@ def _foldl_probe(prefix: Prefix, ctx: BeamCtx, bm: Dict[str, Block]
     mid-fold states -- a state-consistency signal that survives an empty acc.
     typed = body returns a value of the accumulator type (state-preserving)."""
     info = _innermost_body(prefix, ctx)
-    if info is None or info[1].comb != "foldl":
+    if info is None or info[1].comb not in ("foldl", "scan"):
         return None
     body, fr = info
     runs = crash = typed = 0
@@ -499,13 +511,14 @@ def _exact_train(prog: Node, ctx: BeamCtx) -> bool:
 
 def prm_beam_synthesize(view, prm: PRM, blocks: Optional[List[Block]] = None, *,
                         width: int = 8, max_layers: int = 28,
-                        verify=None, collect: bool = True
+                        verify=None, collect: bool = True, enable_scan: bool = False
                         ) -> Tuple[Optional[Node], BeamStats]:
     """Build programs token-by-token, ranking type-valid prefixes by ``prm``.
     A full candidate is admitted only when it is train-exact AND passes the sealed
     holdout (``verify``) -- identical to every other channel's gate. Returns the
-    solving program (or None) and stats incl. PRM training prefixes."""
-    ctx = make_ctx(view, blocks)
+    solving program (or None) and stats incl. PRM training prefixes. ``enable_scan``
+    offers the stateful scan frame (default off -> pre-Unlock-A beams unchanged)."""
+    ctx = make_ctx(view, blocks, enable_scan=enable_scan)
     start = Prefix((), (), 0, False)
     beam: List[Prefix] = [start]
     parent: Dict[str, Optional[str]] = {_key(start): None}
@@ -594,22 +607,23 @@ def replay_path(prog: Node, ctx: BeamCtx) -> Optional[List[Prefix]]:
                          st.ntok + 1, st.used_block)
             states.append(st2)
             return st2
-        if op in ("map", "filter", "foldl"):
+        if op in ("map", "filter", "foldl", "scan"):
+            stateful = op in ("foldl", "scan")           # carry an init + acc
             if st.frames:
                 raise _Unsupported()                      # nested frame > depth 1
             st = emit(node.kids[0], st)                   # source
-            if op == "foldl":
+            if stateful:
                 st = emit(node.kids[1], st)               # init
-            src = st.stack[-2 if op == "foldl" else -1]
+            src = st.stack[-2 if stateful else -1]
             it_t = elem_type(src.node, {}, ctx.arg_elem, ctx.arg_is_list)
-            npop = 2 if op == "foldl" else 1
-            init = st.stack[-1] if op == "foldl" else None
+            npop = 2 if stateful else 1
+            init = st.stack[-1] if stateful else None
             fr2 = Frame(op, src, init, it_t,
                         init.rtype if init else "", len(st.stack) - npop)
             st = Prefix(st.stack[:len(st.stack) - npop], (fr2,), st.ntok + 1,
                         st.used_block)
             states.append(st)
-            body_idx = 2 if op == "foldl" else 1
+            body_idx = 2 if stateful else 1
             st = emit(node.kids[body_idx], st)            # body (it/acc in scope)
             body = st.stack[-1]
             comb_node, comb_rt = _build_comb(fr2, body)

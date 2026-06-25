@@ -138,6 +138,48 @@ def _ev(node: Node, ctx: _Ctx) -> Any:
         ctx.loop_depth -= 1
         return acc
 
+    if op == "scan":
+        # running accumulator: like foldl but COLLECT every intermediate acc.
+        lst = _l(_ev(node.kids[0], ctx))
+        acc = _ev(node.kids[1], ctx)
+        body = node.kids[2]
+        out = []
+        ctx.loop_depth += 1
+        ctx.max_trace_depth = max(ctx.max_trace_depth, ctx.loop_depth)
+        sit, sacc = ctx.env.get("it"), ctx.env.get("acc")
+        for e in lst:
+            ctx.iters += 1
+            ctx.env["it"] = e
+            ctx.env["acc"] = acc
+            acc = _ev(body, ctx)
+            out.append(acc)
+            if len(out) > MAX_LEN:
+                raise AllocLimit("scan output too large")
+        ctx.env["it"], ctx.env["acc"] = sit, sacc
+        ctx.loop_depth -= 1
+        return out
+
+    if op == "iterate":
+        # bounded while/iterate-until: apply body up to ``count`` times, threading
+        # acc + the iteration index (it). count is clamped so it cannot run away.
+        acc = _ev(node.kids[0], ctx)
+        n = _ev(node.kids[1], ctx)
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise IRError("iterate count must be int")
+        n = min(max(n, 0), MAX_LEN)
+        body = node.kids[2]
+        ctx.loop_depth += 1
+        ctx.max_trace_depth = max(ctx.max_trace_depth, ctx.loop_depth)
+        sit, sacc = ctx.env.get("it"), ctx.env.get("acc")
+        for i in range(n):
+            ctx.iters += 1
+            ctx.env["it"] = i
+            ctx.env["acc"] = acc
+            acc = _ev(body, ctx)
+        ctx.env["it"], ctx.env["acc"] = sit, sacc
+        ctx.loop_depth -= 1
+        return acc
+
     if op == "call":
         blk = ctx.blocks.get(node.const)
         if blk is None:

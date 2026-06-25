@@ -37,8 +37,8 @@ from .ir import Node, PRIMS, COMB_RTYPE, inline
 # Ops that build a NEW container (mirrors complexity._CONSTRUCTORS); used by the
 # cheap floor pre-check so generate_spec rarely emits a floor-failing reference.
 _CONSTRUCTORS = {"cons", "lapp", "lsingle", "lrange", "pair", "sconcat",
-                 "srepeat", "schars", "map", "filter", "ltake", "ldrop"}
-_LOOPS = {"map", "filter", "foldl"}
+                 "srepeat", "schars", "map", "filter", "scan", "ltake", "ldrop"}
+_LOOPS = {"map", "filter", "foldl", "scan", "iterate"}
 _PLUMBING = {"lit", "arg", "var", "param"}
 
 

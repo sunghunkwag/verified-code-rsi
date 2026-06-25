@@ -113,10 +113,12 @@ def node_type(n: Node, scope: Dict[str, str], arg_types: Tuple[str, ...]) -> str
         return n.rtype
     if op == "ifx":
         return node_type(n.kids[1], scope, arg_types)
-    if op in ("map", "filter"):
+    if op in ("map", "filter", "scan"):
         return "L"
     if op == "foldl":
         return node_type(n.kids[1], scope, arg_types)
+    if op == "iterate":
+        return node_type(n.kids[0], scope, arg_types)
     if op in PRIMS:
         return PRIMS[op][0]
     return n.rtype
@@ -135,6 +137,9 @@ def elem_type(n: Node, scope, arg_elem, arg_is_list) -> str:
     if op == "map":
         it_t = elem_type(n.kids[0], scope, arg_elem, arg_is_list)
         return node_type(n.kids[1], {**scope, "it": it_t}, arg_elem)
+    if op == "scan":
+        # scan returns the list of intermediate accumulators -> element = acc type
+        return node_type(n.kids[1], scope, arg_elem)
     if op == "lsingle":
         return node_type(n.kids[0], scope, arg_elem)
     if op == "cons":
@@ -205,6 +210,14 @@ class _Gen:
         if tmatch("L", rtype):
             out += ["map", "filter"]
         out += ["foldl", "ifx"]
+        # scan / iterate are the new stateful building blocks (Unlock A). They are
+        # offered ONLY when the policy explicitly enables them (a weight key is
+        # present), so every policy that predates them -- including the Phase-A
+        # default_policy -- generates byte-identically to before.
+        if tmatch("L", rtype) and self.policy.weights.get("scan", 0.0) > 0:
+            out.append("scan")
+        if self.policy.weights.get("iterate", 0.0) > 0:
+            out.append("iterate")
         for name, (rt, ats, _fn) in PRIMS.items():
             if tmatch(rt, rtype):
                 out.append(name)
@@ -264,6 +277,21 @@ class _Gen:
             sc2 = scope + tuple(_expand_var("it", it_t, self.comps)) \
                         + tuple(_expand_var("acc", acc_t, self.comps))
             return Node("foldl", rtype, (src, init, self.gen(rtype, depth - 1, sc2)))
+        if name == "scan":
+            src = self.gen("L", depth - 1, scope)
+            init = self.gen("V", max(0, depth - 2), scope)
+            it_t = elem_type(src, _scope_types(scope), self.arg_elem, self.arg_is_list)
+            acc_t = node_type(init, _scope_types(scope), self.prob.arg_types)
+            sc2 = scope + tuple(_expand_var("it", it_t, self.comps)) \
+                        + tuple(_expand_var("acc", acc_t, self.comps))
+            return Node("scan", "L", (src, init, self.gen(acc_t, depth - 1, sc2)))
+        if name == "iterate":
+            init = self.gen(rtype, depth - 1, scope)
+            count = self.gen("I", max(0, depth - 2), scope)
+            acc_t = node_type(init, _scope_types(scope), self.prob.arg_types)
+            sc2 = scope + tuple(_expand_var("it", "I", self.comps)) \
+                        + tuple(_expand_var("acc", acc_t, self.comps))
+            return Node("iterate", acc_t, (init, count, self.gen(acc_t, depth - 1, sc2)))
         rt, ats, _fn = PRIMS[name]
         return Node(name, rt, tuple(self.gen(at, depth - 1, scope) for at in ats))
 
@@ -347,10 +375,14 @@ def _scope_at(root: Node, path, prob: Problem) -> Tuple[Tuple[Node, str], ...]:
         if cur.op in ("map", "filter") and idx == 1:
             it_t = elem_type(cur.kids[0], st, arg_elem, arg_is_list)
             scope = scope + tuple(_expand_var("it", it_t, comps))
-        elif cur.op == "foldl" and idx == 2:
+        elif cur.op in ("foldl", "scan") and idx == 2:
             it_t = elem_type(cur.kids[0], st, arg_elem, arg_is_list)
             acc_t = node_type(cur.kids[1], st, prob.arg_types)
             scope = scope + tuple(_expand_var("it", it_t, comps)) \
+                          + tuple(_expand_var("acc", acc_t, comps))
+        elif cur.op == "iterate" and idx == 2:
+            acc_t = node_type(cur.kids[0], st, prob.arg_types)
+            scope = scope + tuple(_expand_var("it", "I", comps)) \
                           + tuple(_expand_var("acc", acc_t, comps))
         cur = cur.kids[idx]
     return scope

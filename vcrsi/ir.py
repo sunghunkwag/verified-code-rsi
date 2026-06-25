@@ -210,8 +210,23 @@ def _chk_str(x: Any) -> str:
     raise IRError("sconcat: non-string element")
 
 
-COMBINATORS = {"map", "filter", "foldl", "ifx"}
-COMB_RTYPE = {"map": "L", "filter": "L", "foldl": "V", "ifx": "V"}
+# Stateful higher-order combinators (Unlock A). ``foldl`` (carry an accumulator
+# and return only the FINAL value) was already present; ``scan`` and ``iterate``
+# add the two structures the fold cannot express on its own:
+#   scan(src, init, body)      running accumulator -- returns the LIST of every
+#                              intermediate acc (one per element). This is the
+#                              "stateful prefix" shape (e.g. running depths) that a
+#                              map/filter/foldl could only reach via a hand-rolled
+#                              append-accumulator. It is a GIVEN building block, not
+#                              an invented capability (§1) -- what matters is what
+#                              the system COMPOSES from it.
+#   iterate(init, count, body) bounded while/iterate-until: apply ``body`` up to
+#                              ``count`` times (count clamped to MAX_LEN, so a
+#                              candidate cannot spin), threading ``acc`` and the
+#                              iteration index ``it``. Returns the final acc.
+COMBINATORS = {"map", "filter", "foldl", "scan", "iterate", "ifx"}
+COMB_RTYPE = {"map": "L", "filter": "L", "foldl": "V", "scan": "L",
+              "iterate": "V", "ifx": "V"}
 
 
 # --------------------------------------------------------------------------- #

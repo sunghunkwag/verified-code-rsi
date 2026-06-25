@@ -39,7 +39,7 @@ from .generator import GenSpec, generate_spec, on_whitelist
 from .search import synthesize
 from .search_oe import oe_solve
 from .prm_beam import prm_beam_synthesize
-from .library import broad_policy, mine_blocks
+from .library import broad_policy, stateful_policy, mine_blocks
 from .archive import MapElites
 from .rsi import Guidance
 
@@ -58,7 +58,7 @@ LIBRARY_CAP = 10
 # Solver portfolios (probe = low budget, attack = high budget; same machinery)  #
 # --------------------------------------------------------------------------- #
 def _policy_with(blocks: List[Block]):
-    pol = broad_policy()
+    pol = stateful_policy()
     pol.blocks = list(blocks)
     pol.block_prob = 0.22 if blocks else 0.0
     return pol
@@ -76,7 +76,8 @@ def probe_solves(orc: SealedOracle, guidance: Guidance,
         return True
     w, l = PROBE_BEAM
     p, _ = prm_beam_synthesize(v, guidance.prm, blocks, width=w, max_layers=l,
-                               verify=lambda pr: orc.verify(pr, _bm(blocks)))
+                               verify=lambda pr: orc.verify(pr, _bm(blocks)),
+                               enable_scan=True)
     return p is not None and orc.verify(p, _bm(blocks))
 
 
@@ -93,7 +94,8 @@ def attack(orc: SealedOracle, guidance: Guidance,
         return p, "memetic"
     w, l = ATTACK_BEAM
     p, _ = prm_beam_synthesize(v, guidance.prm, blocks, width=w, max_layers=l,
-                               verify=lambda pr: orc.verify(pr, bm))
+                               verify=lambda pr: orc.verify(pr, bm),
+                               enable_scan=True)
     if p is not None and orc.verify(p, bm):
         return p, "beam"
     return None, "-"
@@ -305,7 +307,8 @@ def eval_on_external(externals: List[SealedOracle], guidance: Guidance,
             w, l = ATTACK_BEAM
             p, _ = prm_beam_synthesize(v, guidance.prm, library, width=w,
                                        max_layers=l,
-                                       verify=lambda pr: orc.verify(pr, bm))
+                                       verify=lambda pr: orc.verify(pr, bm),
+                                       enable_scan=True)
             ok = solved_and_floor_ok(p, orc, library)
         else:
             p, _ch = attack(orc, guidance, library)
