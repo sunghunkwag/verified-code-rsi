@@ -21,7 +21,7 @@ The static type/shape gate lives in ``_expand``: ill-typed tokens are never
 generated, so the beam never spends a run on garbage, and the gate is identical
 for the frozen and adaptive arms (the only difference is RANKING).
 
-Running a partial program (the crux of the features). ``complete_with_defaults``
+Running a partial program (the crux of the features). ``candidate_programs``
 closes every open obligation with the best IN-SCOPE bound variable of the needed
 type (an identity fold uses ``acc``; a per-element int hole grabs ``snd(it)``),
 falling back to a typed literal only when no scoped var fits. This scope-aware
@@ -264,7 +264,7 @@ def _build_comb(fr: Frame, body: Sub) -> Tuple[Node, str]:
 
 
 # --------------------------------------------------------------------------- #
-# complete_with_defaults: turn a partial prefix into a runnable closed program   #
+# candidate_programs: turn a partial prefix into runnable closed programs        #
 # --------------------------------------------------------------------------- #
 _LIT = {"I": Node("lit", "I", const=0), "B": Node("lit", "B", const=False),
         "S": Node("lit", "S", const=""), "L": Node("lit", "L", const=[]),
@@ -285,28 +285,6 @@ def _coerce(node: Node, have: str, want: str) -> Optional[Node]:
     if op is not None:
         return Node(op, want, (node,))
     return None
-
-
-def _scope_default(t: str, fr: Optional[Frame], comps: Tuple[str, str]) -> Node:
-    """The Graft-1 fix: fill a hole of type ``t`` with the best in-scope bound
-    variable (so a half-built body completes NEAR the target), else a typed
-    literal."""
-    if fr is not None:
-        it = Node("var", fr.it_t, const="it")
-        if t == "V" and fr.comb == "foldl":
-            return Node("var", fr.acc_t, const="acc")        # identity fold
-        if fr.it_t == "P":
-            if tmatch(comps[1], t):
-                return Node("snd", comps[1], (it,))
-            if tmatch(comps[0], t):
-                return Node("fst", comps[0], (it,))
-        if tmatch(fr.it_t, t):
-            return it
-        if fr.comb == "foldl" and tmatch(fr.acc_t, t):
-            return Node("var", fr.acc_t, const="acc")
-        if t == "V":
-            return it
-    return _LIT.get(t, _LIT["I"])
 
 
 def _scope_fillers(want: str, fr: Frame, comps: Tuple[str, str]) -> List[Node]:
@@ -393,12 +371,6 @@ def candidate_programs(prefix: Prefix, ctx: BeamCtx) -> List[Node]:
     else:
         progs = _complete_region(prefix.stack, ctx.out_type, None, ctx.comps)
     return progs or [_LIT.get(ctx.out_type, _LIT["I"])]
-
-
-def complete_with_defaults(prefix: Prefix, ctx: BeamCtx) -> Node:
-    """The single canonical completion (first of the fan) -- used where one
-    closed program is needed (probes, digests)."""
-    return candidate_programs(prefix, ctx)[0]
 
 
 def _innermost_body(prefix: Prefix, ctx: BeamCtx) -> Optional[Tuple[Node, Frame]]:
