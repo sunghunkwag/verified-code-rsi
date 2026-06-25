@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from .oracle import SealedOracle, assert_verifier_unchanged, verifier_fingerprint
-from .rsi import run_arm, ArmResult
+from .rsi import run_arm, ArmResult, run_guided_arm, GuidedArmResult
 
 
 # canonical task order (easy -> hard); a curriculum so learned structure from
@@ -69,3 +69,56 @@ def run_counterfactual(oracles: Dict[str, SealedOracle], *, budget: int = 25000,
     assert_verifier_unchanged(oracles, "counterfactual.end")
     delta = adaptive.solved_count() - frozen.solved_count()
     return CFResult(adaptive, frozen, delta, fp)
+
+
+# --------------------------------------------------------------------------- #
+# Phase C: the SOLVER-SELF-IMPROVEMENT counterfactual (delta a) -- adaptive    #
+# (trained PRM + world model) vs frozen (wave-0, untrained) guidance, equal    #
+# beam budget. This is the load-bearing solver-self-improvement claim.         #
+# --------------------------------------------------------------------------- #
+# the seqcode/codec curriculum the PRM-guided beam operates on; the harder
+# families it cannot crack are reported OPEN by --mode solve-hard.
+GUIDANCE_ORDER = [
+    "rle_decode", "rle_decode_rev", "rle_decode_sorted", "rle_decode_rev_twice",
+    "rle_decode_shift1", "rle_decode_twice", "rle_decode_palindrome",
+    "rle_rev_palindrome", "caesar_encode", "caesar_decode",
+]
+
+
+@dataclass
+class GuidanceCF:
+    adaptive: GuidedArmResult
+    frozen: GuidedArmResult
+    delta: int
+    verifier_fp: str
+
+    def to_dict(self) -> dict:
+        a, f = self.adaptive, self.frozen
+        return {
+            "verifier_fp": self.verifier_fp,
+            "adaptive_solved": a.solved_count(),
+            "frozen_solved": f.solved_count(),
+            "delta": self.delta,
+            "adaptive_tasks": sorted(a.adopted),
+            "frozen_tasks": sorted(f.adopted),
+            "adaptive_only": sorted(set(a.adopted) - set(f.adopted)),
+            "prm_wave_digests": a.guidance.wave_digests,
+            "world_coverage": a.guidance.world.coverage(),
+            "adaptive_digest": a.digest(),
+            "frozen_digest": f.digest(),
+        }
+
+
+def run_guidance_counterfactual(oracles: Dict[str, SealedOracle], *,
+                                width: int = 24, layers: int = 30, waves: int = 3,
+                                task_order: Optional[List[str]] = None,
+                                verbose: bool = False) -> GuidanceCF:
+    order = task_order or [t for t in GUIDANCE_ORDER if t in oracles]
+    fp = assert_verifier_unchanged(oracles, "guidance_cf.start")
+    frozen = run_guided_arm(oracles, adaptive=False, order=order, width=width,
+                            layers=layers, waves=waves, verbose=verbose)
+    adaptive = run_guided_arm(oracles, adaptive=True, order=order, width=width,
+                              layers=layers, waves=waves, verbose=verbose)
+    assert_verifier_unchanged(oracles, "guidance_cf.end")
+    delta = adaptive.solved_count() - frozen.solved_count()
+    return GuidanceCF(adaptive, frozen, delta, fp)

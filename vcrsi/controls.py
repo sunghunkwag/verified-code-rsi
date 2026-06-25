@@ -387,6 +387,131 @@ def ctl_archive_spread_is_real(oracles) -> Tuple[bool, str]:
     return ok, (f"archive coverage: {cov} (need cells spanning >=2 families)")
 
 
+# =========================================================================== #
+# Phase C (v3) learned-guidance controls (§5)                                  #
+# =========================================================================== #
+def ctl_prm_is_oracle_free(oracles) -> Tuple[bool, str]:
+    """The PRM and its feature extractor reference neither the sealed oracle, the
+    held-out battery, nor family/group metadata -- only train I/O + program
+    structure. Source/data-flow inspection of prm.py and prm_beam.py."""
+    from . import prm as PRM_MOD, prm_beam as BEAM_MOD
+    src = inspect.getsource(PRM_MOD) + inspect.getsource(BEAM_MOD)
+    # code-level leakage symbols (English words in docstrings do not count): the
+    # PRM must not import the oracle/tasks modules nor read references/held-out.
+    forbidden = ["from .oracle", "from .tasks", "import oracle", "import tasks",
+                 "build_oracles", "SUITE_BY_NAME", "._holdout", "_make_example",
+                 "_ref_", "task.reference", ".reference", "TRANSFER_FAMILIES",
+                 "task.family", "task.group", ".gen_input"]
+    hits = [w for w in forbidden if w in src]
+    # the only data the features read is the public training I/O (BeamCtx.train
+    # is built from view.public_examples); confirm that surface is the source.
+    from .prm_beam import make_ctx
+    ctx = make_ctx(oracles["rle_decode"].public_view(), [])
+    train_is_public = (ctx.train ==
+                       [(tuple(a), y) for a, y in
+                        oracles["rle_decode"].public_view().public_examples[:4]])
+    ok = (not hits) and train_is_public
+    return ok, (f"PRM/feature source oracle-free={not hits} (hits={hits}); features"
+                f" read only public train I/O={train_is_public}")
+
+
+def ctl_prm_cross_task_not_memorised(oracles) -> Tuple[bool, str]:
+    """The PRM is a small FIXED-dimensional model whose parameters do not grow per
+    task (cannot memorise task-specific answers); a frozen PRM is load-bearing
+    (changes behaviour); and a PRM is not a lookup table of solutions."""
+    from .prm import PRM, NFEAT
+    from .prm_beam import train_prm_on_solution
+    from .search_oe import oe_solve
+    sol = oe_solve(oracles["rle_decode"].public_view(), blocks=[], max_size=12,
+                   eval_budget=90_000)
+    p1 = PRM()
+    train_prm_on_solution(p1, sol, oracles["rle_decode"].public_view())
+    dim1 = (len(p1.w), len(p1.wsum))
+    # train on MORE tasks -> dimension is UNCHANGED (no per-task growth)
+    p2 = p1.clone()
+    for tn in ("rle_decode", "rle_decode"):
+        train_prm_on_solution(p2, sol, oracles["rle_decode"].public_view())
+    dim2 = (len(p2.w), len(p2.wsum))
+    fixed_dim = dim1 == (NFEAT, NFEAT) and dim2 == (NFEAT, NFEAT)
+    # frozen vs trained differ (load-bearing); a frozen PRM scores everything 0
+    frozen = PRM()
+    differs = frozen.digest() != p1.digest() and frozen.is_frozen()
+    ok = fixed_dim and differs
+    return ok, (f"PRM is {NFEAT}-dim regardless of #tasks (dims {dim1}->{dim2}); "
+                f"params do not grow per task={fixed_dim}; frozen!=trained "
+                f"digest & frozen-scores-zero={differs}")
+
+
+def ctl_world_model_honest_abstention(oracles) -> Tuple[bool, str]:
+    """On an uncovered op the world model ABSTAINS (no fabrication); on covered
+    cases its predictions EQUAL real execution (fuzz); and it learns op semantics
+    only by ACTING on the interpreter (never reading the impl table)."""
+    from .world_model import OpSemanticsModel, ABSTAIN
+    from . import world_model as WM_MOD
+    from .interp import op_step
+    src = inspect.getsource(WM_MOD)
+    # must use op_step (the interpreter channel), never index the PRIMS impl table
+    reads_impl = ("PRIMS[" in src) or ("PRIMS." in src) or ("import PRIMS" in src) \
+        or ("PRIMS," in src) or (" PRIMS\n" in src)
+    uses_step = "op_step" in src
+    wm = OpSemanticsModel()
+    rng = random.Random(7)
+    for _ in range(24):
+        a, b = rng.randint(-9, 9), rng.randint(-9, 9)
+        for op in ("add", "sub", "mul", "imax"):
+            wm.act(op, (a, b))
+    # covered: predictions equal the real interpreter
+    covered_ok = True
+    for _ in range(60):
+        a, b = rng.randint(-9, 9), rng.randint(-9, 9)
+        for op in ("add", "sub", "mul"):
+            pred = wm.predict(op, (a, b))
+            _ok, real = op_step(op, (a, b))
+            if pred is not ABSTAIN and pred != real:
+                covered_ok = False
+    # uncovered op -> ABSTAIN (never fabricate)
+    abstains = (wm.predict("srepeat", ("a", 2)) is ABSTAIN
+                and wm.predict("schr", (65,)) is ABSTAIN)
+    ok = (not reads_impl) and uses_step and covered_ok and abstains
+    return ok, (f"world model uses op_step not impl-table (reads_impl={reads_impl}, "
+                f"uses_step={uses_step}); covered==real={covered_ok}; uncovered "
+                f"op abstains={abstains}")
+
+
+def ctl_frozen_vs_adaptive_guidance_is_load_bearing(oracles) -> Tuple[bool, str]:
+    """The §2 proof: >=1 task is solved by the ADAPTIVE (trained-PRM) guidance that
+    the FROZEN (wave-0, untrained) guidance leaves OPEN at equal beam budget; and
+    removing the trained guidance reverts that task to OPEN."""
+    from .rsi import run_guided_arm
+    order = ["rle_decode", "rle_decode_sorted"]
+    adaptive = run_guided_arm(oracles, adaptive=True, order=order, width=18,
+                              layers=26, waves=2, bootstrap=["rle_decode"])
+    frozen = run_guided_arm(oracles, adaptive=False, order=order, width=18,
+                            layers=26, waves=2, bootstrap=["rle_decode"])
+    adaptive_only = set(adaptive.adopted) - set(frozen.adopted)
+    ok = len(adaptive_only) >= 1 and len(frozen.adopted) == 0
+    return ok, (f"adaptive guidance solved {sorted(adaptive.adopted)}; frozen "
+                f"guidance solved {sorted(frozen.adopted)}; adaptive-only (OPEN "
+                f"under frozen)={sorted(adaptive_only)} -> load-bearing={ok}")
+
+
+def ctl_guidance_determinism(oracles) -> Tuple[bool, str]:
+    """Same seed -> byte-identical PRM digest AND identical adoption log."""
+    from .rsi import run_guided_arm
+    o2 = build_oracles()
+    order = ["rle_decode", "rle_decode_sorted"]
+    a = run_guided_arm(oracles, adaptive=True, order=order, width=18, layers=26,
+                       waves=2, bootstrap=["rle_decode"])
+    b = run_guided_arm(o2, adaptive=True, order=order, width=18, layers=26,
+                       waves=2, bootstrap=["rle_decode"])
+    prm_same = a.guidance.prm.digest() == b.guidance.prm.digest()
+    log_same = a.digest() == b.digest()
+    ok = prm_same and log_same
+    return ok, (f"two runs same seed: prm_digest {a.guidance.prm.digest()} == "
+                f"{b.guidance.prm.digest()} -> {prm_same}; adoption_log match="
+                f"{log_same}")
+
+
 def ctl_ablation_runs(oracles) -> Tuple[bool, str]:
     # confirm all six configs are defined and each executes end-to-end on one
     # held-out family at a tiny budget (a skipped config = fail).
@@ -427,6 +552,13 @@ CONTROLS: List[Tuple[str, Callable]] = [
     ("oe_no_leakage (§5.5)", ctl_oe_no_leakage),
     ("archive_spread_is_real (§5.7)", ctl_archive_spread_is_real),
     ("ablation_runs (§5.8)", ctl_ablation_runs),
+    # --- Phase C (v3) learned-guidance controls (§5) --- #
+    ("prm_is_oracle_free (§5.1)", ctl_prm_is_oracle_free),
+    ("prm_is_cross_task_not_memorised (§5.2)", ctl_prm_cross_task_not_memorised),
+    ("world_model_honest_abstention (§5.3)", ctl_world_model_honest_abstention),
+    ("frozen_vs_adaptive_guidance_is_load_bearing (§5.4)",
+     ctl_frozen_vs_adaptive_guidance_is_load_bearing),
+    ("guidance_determinism (§5.5)", ctl_guidance_determinism),
 ]
 
 

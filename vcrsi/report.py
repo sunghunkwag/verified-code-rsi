@@ -6,9 +6,15 @@ from typing import List
 
 from .ir import pp
 from .oracle import build_oracles, assert_verifier_unchanged
-from .complexity import complexity_floor
-from .rsi import run_arm
-from .counterfactual import run_counterfactual, DEFAULT_ORDER
+from .complexity import complexity_floor, adopted_program_ops, MIN_SOLUTION_OPS
+from .rsi import run_arm, run_guided_arm, Guidance, GuidedArmResult, BOOTSTRAP_TASKS
+from .counterfactual import (run_counterfactual, DEFAULT_ORDER,
+                             run_guidance_counterfactual, GUIDANCE_ORDER)
+from .search_oe import oe_solve
+from .search import synthesize
+from .library import broad_policy
+from .prm import PRM
+from .prm_beam import prm_beam_synthesize
 
 # Locked, documented run parameters (the README's numbers regenerate from these).
 BUDGET = 6000
@@ -16,6 +22,11 @@ ROUNDS = 7
 GATE_BUDGET = 6000
 TRANSFER_BUDGET = 16000      # per-task solve budget in the transfer experiment
 ABLATION_BUDGET = 11000      # smaller per-task budget for the 6-config ablation
+# Phase C: the PRM-guided beam budget (width x layers), shared by every channel
+# and both arms of the guidance counterfactual.
+GUIDE_WIDTH = 24
+GUIDE_LAYERS = 30
+GUIDE_WAVES = 3
 
 # A dedicated curriculum that elicits the block-on-block lineage (the library is
 # the sole adaptive channel here, so composed blocks are genuinely needed).
@@ -99,11 +110,28 @@ def run_demo() -> int:
     print(f"  blocks mined+gated this run: {[b.name for b in res.blocks]}")
 
     _print_lineage(oracles)
+    _print_guidance_demo(oracles)
     assert_verifier_unchanged(oracles, "demo.end")
     print("=" * 78)
-    print("Run `--mode counterfactual` for the measured adaptive-vs-frozen delta,")
-    print("and `--mode test` for the anti-cheat controls.")
+    print("Run `--mode solve-hard` for the full portfolio on the hard families,")
+    print("`--mode counterfactual` for both deltas, `--mode test` for the controls.")
     return 0
+
+
+def _print_guidance_demo(oracles) -> None:
+    """Phase C: PRM digest evolution across waves + world-model coverage."""
+    print("-" * 78)
+    print("LEARNED-GUIDANCE RSI -- PRM (process-reward model) digest across waves")
+    order = [t for t in GUIDANCE_ORDER if t in oracles]
+    res = run_guided_arm(oracles, adaptive=True, order=order, width=GUIDE_WIDTH,
+                         layers=GUIDE_LAYERS, waves=GUIDE_WAVES)
+    print("  the PRM is trained on the system's OWN solved programs; its digest")
+    print("  changes wave-to-wave as it learns (a frozen PRM's digest never moves):")
+    for i, dg in enumerate(res.guidance.wave_digests):
+        print(f"    wave {i}: prm_digest = {dg}")
+    print(f"  world-model coverage : {res.guidance.world.coverage()}")
+    print(f"  PRM-beam solved ({res.solved_count()}): {sorted(res.adopted)}")
+    print(f"  still OPEN under the beam: {res.open_tasks}")
 
 
 def SUITE_NOTE(oracles, name) -> str:
@@ -179,27 +207,133 @@ def run_ablation_mode() -> int:
 def run_counterfactual_mode() -> int:
     oracles = build_oracles()
     print("=" * 78)
-    print("VERIFIED-CODE-RSI -- COUNTERFACTUAL (adaptive vs frozen)")
-    print("equal per-attempt budget, equal per-(task,round) seeds; the ONLY")
-    print("difference is that the adaptive arm improves its own search policy.")
+    print("VERIFIED-CODE-RSI -- COUNTERFACTUAL (two deltas, equal budget/seeds)")
     print("=" * 78)
+    # --- delta (a): SOLVER SELF-IMPROVEMENT (adaptive vs frozen guidance) --- #
+    print("DELTA (a) -- LEARNED GUIDANCE: adaptive (PRM+world model trained on the")
+    print("system's own solves) vs frozen (wave-0, untrained) guidance; the PRM-")
+    print("guided beam is the sole solver, equal beam budget. This is the solver-")
+    print("self-improvement claim.")
+    print("-" * 78)
+    gcf = run_guidance_counterfactual(oracles, width=GUIDE_WIDTH,
+                                      layers=GUIDE_LAYERS, waves=GUIDE_WAVES)
+    g = gcf.to_dict()
+    print(f"frozen-guidance  solved    : {g['frozen_solved']}  {g['frozen_tasks']}")
+    print(f"adaptive-guidance solved   : {g['adaptive_solved']}  {g['adaptive_tasks']}")
+    print(f"adaptive-only (the delta)  : {g['adaptive_only']}")
+    print(f"PRM digest per wave        : {g['prm_wave_digests']}")
+    print(f"world-model coverage       : {g['world_coverage']}")
+    print(f"frozen / adaptive digests  : {g['frozen_digest']} / {g['adaptive_digest']}")
+    print(f">>> SOLVER-SELF-IMPROVEMENT DELTA (a) = {g['adaptive_solved']} - "
+          f"{g['frozen_solved']} = {gcf.delta} <<<")
+    print("=" * 78)
+    # --- delta (b): the existing MACRO-LIBRARY RSI counterfactual ---------- #
+    print("DELTA (b) -- MACRO LIBRARY: with-library (adaptive) vs no-library")
+    print("(frozen) stochastic/OE portfolio; equal per-attempt budget and seeds.")
+    print("-" * 78)
     cf = run_counterfactual(oracles, budget=BUDGET, rounds=ROUNDS,
                             gate_budget=GATE_BUDGET)
     d = cf.to_dict()
-    print(f"verifier_fp                : {d['verifier_fp']}")
     print(f"frozen  arm solved         : {d['frozen_solved']}  {d['frozen_tasks']}")
     print(f"adaptive arm solved        : {d['adaptive_solved']}  {d['adaptive_tasks']}")
     print(f"adaptive-only (the delta)  : {d['adaptive_only']}")
-    print("-" * 78)
-    print(f"MEASURED SELF-IMPROVEMENT DELTA = adaptive - frozen = "
-          f"{d['adaptive_solved']} - {d['frozen_solved']} = {d['delta']}")
-    print("-" * 78)
     print(f"library blocks adopted     : {d['blocks_adopted']}")
-    print(f"frozen adoption digest     : {d['frozen_digest']}")
-    print(f"adaptive adoption digest   : {d['adaptive_digest']}")
-    print(f"frozen total evals         : {d['frozen_evals']}")
-    print(f"adaptive total evals       : {d['adaptive_evals']}")
+    print(f"frozen / adaptive digests  : {d['frozen_digest']} / {d['adaptive_digest']}")
+    print(f">>> MACRO-LIBRARY DELTA (b) = {d['adaptive_solved']} - "
+          f"{d['frozen_solved']} = {d['delta']} <<<")
     print("=" * 78)
+    print(f"verifier_fp (unchanged): {d['verifier_fp']}")
     print("Reproducible: re-run with the same seed -> byte-identical digests.")
-    print("This delta IS the self-improvement claim; nothing else is asserted.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# --mode solve-hard : the full portfolio on the suite incl. the hard families   #
+# --------------------------------------------------------------------------- #
+def _build_adaptive_guidance(oracles) -> Guidance:
+    """Train the adaptive guidance (PRM + world model) by running the guided arm
+    over the seqcode curriculum, so its PRM-beam channel is the trained one. The
+    world model additionally observes a few arithmetic solutions so it learns real
+    binary-op semantics (add/sub/mul/...) -- not just the seqcode string ops."""
+    order = [t for t in GUIDANCE_ORDER if t in oracles]
+    res = run_guided_arm(oracles, adaptive=True, order=order, width=GUIDE_WIDTH,
+                         layers=GUIDE_LAYERS, waves=GUIDE_WAVES)
+    for tn in ("scaled_widths", "midpoints", "keep_wide", "shift_intervals",
+               "clamped_widths"):
+        if tn not in oracles:
+            continue
+        sol, _st = synthesize(oracles[tn].public_view(), broad_policy(), 30_000, 7)
+        if sol is not None and oracles[tn].verify(sol):
+            res.guidance.world.observe_program(
+                sol, [list(a) for a, _y in oracles[tn].public_view().public_examples])
+    return res.guidance
+
+
+def _portfolio_attack(orc, guidance: Guidance):
+    """Try every channel on one task: OE, stochastic, then the PRM-guided beam.
+    Returns (program | None, channel, best_partial)."""
+    view = orc.public_view()
+    # channel 1: bottom-up OE
+    p = oe_solve(view, blocks=[], max_size=12, eval_budget=90_000)
+    if p is not None and orc.verify(p) and adopted_program_ops(p, {}) >= MIN_SOLUTION_OPS:
+        return p, "oe", 1.0
+    # channel 2: memetic / stochastic
+    p, _st = synthesize(view, broad_policy(), 35_000, 7)
+    if p is not None and orc.verify(p) and adopted_program_ops(p, {}) >= MIN_SOLUTION_OPS:
+        return p, "memetic", 1.0
+    # channel 3: PRM-guided beam (adaptive guidance)
+    p, st = prm_beam_synthesize(view, guidance.prm, [], width=GUIDE_WIDTH,
+                                max_layers=GUIDE_LAYERS, verify=orc.verify)
+    if p is not None and orc.verify(p) and adopted_program_ops(p, {}) >= MIN_SOLUTION_OPS:
+        return p, "prm-beam", 1.0
+    return None, "", st.best_partial
+
+
+# suite order for solve-hard: the hard families are the explicit objective.
+SOLVE_HARD_ORDER = [
+    "rle_decode", "rle_decode_rev", "rle_decode_sorted", "rle_decode_shift1",
+    "caesar_encode", "interleave_pairs", "shift_intervals", "keep_wide",
+    "midpoints", "merge_intervals", "bracket_depths", "bytecode_interp",
+]
+HARD_FAMILIES = {"merge_intervals", "bracket_depths", "bytecode_interp"}
+
+
+def run_solve_hard() -> int:
+    oracles = build_oracles()
+    fp = assert_verifier_unchanged(oracles, "solve-hard")
+    print("=" * 78)
+    print("VERIFIED-CODE-RSI -- SOLVE-HARD (full portfolio: OE + memetic + PRM-beam)")
+    print(f"verifier_fp = {fp}")
+    print("The hard, previously-OPEN families (the objective) are marked [HARD].")
+    print("=" * 78)
+    print("Training the adaptive guidance (PRM + world model) ...")
+    g = _build_adaptive_guidance(oracles)
+    print(f"  PRM digest evolution : {g.wave_digests}")
+    print(f"  world-model coverage : {g.world.coverage()}")
+    print("-" * 78)
+    print("%-20s %-6s %-9s %s" % ("task", "state", "channel", "best_partial/note"))
+    solved = 0
+    hard_solved = 0
+    order = [t for t in SOLVE_HARD_ORDER if t in oracles]
+    for tn in order:
+        orc = oracles[tn]
+        prog, ch, bp = _portfolio_attack(orc, g)
+        tag = " [HARD]" if tn in HARD_FAMILIES else ""
+        if prog is not None:
+            solved += 1
+            hard_solved += int(tn in HARD_FAMILIES)
+            # the world model learns op semantics from every solved program
+            g.world.observe_program(prog, [list(a) for a, _y in
+                                           orc.public_view().public_examples])
+            print("%-20s %-6s %-9s %s" % (tn + tag, "SOLVED", ch, pp(prog)[:34]))
+        else:
+            print("%-20s %-6s %-9s best_exact_frac=%.2f" %
+                  (tn + tag, "OPEN", "-", bp))
+    assert_verifier_unchanged(oracles, "solve-hard.end")
+    print("-" * 78)
+    print(f"SOLVED {solved}/{len(order)} ; HARD families cracked {hard_solved}/3 "
+          f"({sorted(HARD_FAMILIES)})")
+    print("The PRM-guided beam's contribution is the tasks marked channel=prm-beam;")
+    print("OPEN tasks are reported with their best train-exact fraction, never hidden.")
+    print("=" * 78)
     return 0

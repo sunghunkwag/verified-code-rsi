@@ -9,9 +9,13 @@ See README.md for the architecture and the measured deltas. The package layout:
   oracle.py       the sealed, hash-pinned correctness oracle (the verifier root)
   complexity.py   the machine-checked complexity floor (§6B)
   search.py       LLM-free stochastic/genetic synthesizer over the IR
+  search_oe.py    bottom-up observational-equivalence synthesizer (a 2nd channel)
   library.py      the evolvable policy genome (op weights + mined subroutines)
-  rsi.py          the recursive-self-improvement loop + META-GATE + lineage
-  counterfactual.py  adaptive vs frozen arms at equal budget/seeds
-  controls.py     the anti-cheat controls (§4) as runnable tests
-  report.py       --mode demo / counterfactual / test drivers
+  prm.py          Phase C M1: the process-reward model (averaged perceptron) + features
+  prm_beam.py     Phase C M2: the PRM-guided beam search over program prefixes
+  world_model.py  Phase C M3: a learned, honestly-abstaining model of op semantics
+  rsi.py          the RSI loop + META-GATE + lineage + the learned-guidance arm
+  counterfactual.py  adaptive vs frozen arms (macro library AND learned guidance)
+  controls.py     the anti-cheat controls (§4/§5) as runnable tests
+  report.py       --mode demo / counterfactual / solve-hard / test drivers
 """

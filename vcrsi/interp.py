@@ -26,6 +26,10 @@ _CONTROLLED = (IRError, RecursionError, ZeroDivisionError, IndexError,
 DEFAULT_STEPS = 200_000
 MAX_CALL_DEPTH = 60
 
+# The primitive op NAMES (not their implementations) -- a neutral surface the
+# world model can size its coverage against without touching the impl table.
+PRIM_NAMES: Tuple[str, ...] = tuple(sorted(PRIMS))
+
 
 class RunResult:
     __slots__ = ("value", "error", "steps", "trace_depth", "iters")
@@ -177,3 +181,19 @@ def run(prog: Node, args: List[Any], blocks: Optional[Dict[str, Block]] = None,
         return RunResult(val, None, ctx.steps, ctx.max_trace_depth, ctx.iters)
     except _CONTROLLED as e:
         return RunResult(None, e, ctx.steps, ctx.max_trace_depth, ctx.iters)
+
+
+# --------------------------------------------------------------------------- #
+# Single-op semantics probe (the ONLY ground-truth channel for the world model)#
+# --------------------------------------------------------------------------- #
+def op_step(op: str, argvals: Tuple[Any, ...], max_steps: int = 20_000
+            ) -> Tuple[bool, Any]:
+    """Evaluate ONE primitive operation on concrete argument values, routed
+    through the real interpreter (``_ev`` -> ``PRIMS`` dispatch). This is the only
+    way ``world_model.OpSemanticsModel`` is permitted to observe what an op does:
+    it ACTS on the interpreter and reads the result, never the primitive's
+    implementation. Returns ``(ok, value)``; ``ok`` is False on any controlled
+    failure (so the world model records honest 'this op errored on these args')."""
+    kids = tuple(Node("lit", "V", const=v) for v in argvals)
+    r = run(Node(op, "V", kids), [], max_steps=max_steps)
+    return (r.ok, r.value if r.ok else None)

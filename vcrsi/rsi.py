@@ -33,6 +33,10 @@ from .library import (Policy, default_policy, mine_blocks, _block_calls,
 from .search import synthesize, shrink
 from .complexity import adopted_program_ops, MIN_SOLUTION_OPS
 from .oracle import SealedOracle, assert_verifier_unchanged
+from .prm import PRM
+from .prm_beam import prm_beam_synthesize, train_prm_on_solution
+from .world_model import OpSemanticsModel
+from .search_oe import oe_solve
 
 
 # --------------------------------------------------------------------------- #
@@ -339,4 +343,125 @@ def run_arm(oracles: Dict[str, SealedOracle], adaptive: bool, *,
     res.open_tasks = [t for t in order if t not in res.adopted]
     res.blocks = list(policy.blocks)
     res.policy_versions = policy.version
+    return res
+
+
+# =========================================================================== #
+# Phase C: the LEARNED-GUIDANCE recursive self-improvement substrate            #
+# --------------------------------------------------------------------------- #
+# The recursion is now on the solver's own search guidance: a process-reward    #
+# model (PRM, prm.py) ranking program prefixes for a beam search (prm_beam.py),  #
+# plus a world model (world_model.py) over op semantics. Both are trained on the #
+# system's OWN solved programs and persist/improve across waves. The frozen      #
+# (wave-0, untrained) guidance is the counterfactual baseline.                   #
+# =========================================================================== #
+DEFAULT_BEAM_WIDTH = 24
+DEFAULT_BEAM_LAYERS = 30
+# the two simplest seqcode tasks the deterministic OE channel can solve on its
+# own; their solutions are the wave-0 training data for the adaptive guidance.
+BOOTSTRAP_TASKS = ["rle_decode", "rle_decode_rev"]
+
+
+@dataclass
+class Guidance:
+    """The learned, persisted, recursively-improved search guidance."""
+    prm: PRM = field(default_factory=PRM)
+    world: OpSemanticsModel = field(default_factory=OpSemanticsModel)
+    wave_digests: List[str] = field(default_factory=list)
+
+    def record_digest(self) -> None:
+        self.wave_digests.append(self.prm.digest())
+
+    def train_on(self, prog: Node, view, blocks: Optional[List[Block]] = None,
+                 epochs: int = 3) -> bool:
+        """Train the PRM (prefix episodes) and the world model (observed op
+        transitions) on ONE solved program -- the system's own output."""
+        ok = False
+        for _ in range(epochs):
+            ok = train_prm_on_solution(self.prm, prog, view, blocks) or ok
+        self.world.observe_program(prog, [list(a) for a, _y in view.public_examples])
+        return ok
+
+
+@dataclass
+class GuidedArmResult:
+    adaptive: bool
+    adopted: Dict[str, Node] = field(default_factory=dict)
+    channel: Dict[str, str] = field(default_factory=dict)
+    best_partial: Dict[str, float] = field(default_factory=dict)
+    open_tasks: List[str] = field(default_factory=list)
+    guidance: Guidance = field(default_factory=Guidance)
+
+    def solved_count(self) -> int:
+        return len(self.adopted)
+
+    def digest(self) -> str:
+        h = hashlib.sha256()
+        for name in sorted(self.adopted):
+            h.update(f"{name}:{pp(self.adopted[name])}\n".encode())
+        h.update(("|" + "|".join(self.guidance.wave_digests)).encode())
+        return h.hexdigest()[:16]
+
+
+def _guided_adopt_ok(prog: Node, oracle: SealedOracle) -> bool:
+    return (prog is not None and oracle.verify(prog)
+            and adopted_program_ops(prog, {}) >= MIN_SOLUTION_OPS)
+
+
+def run_guided_arm(oracles: Dict[str, SealedOracle], adaptive: bool, *,
+                   order: List[str], width: int = DEFAULT_BEAM_WIDTH,
+                   layers: int = DEFAULT_BEAM_LAYERS, waves: int = 3,
+                   bootstrap: Optional[List[str]] = None,
+                   verbose: bool = False) -> GuidedArmResult:
+    """One arm of the guidance counterfactual. The ADAPTIVE arm trains its PRM +
+    world model on the system's own solved programs (bootstrapped from the OE
+    channel's solutions of the simplest tasks, then on the beam's own solves) and
+    so its PRM-beam cracks tasks the FROZEN (untrained-PRM) arm leaves OPEN at the
+    same beam budget. The beam is the SOLE channel during the waves, so the delta
+    is attributable to the learned guidance alone."""
+    bootstrap = bootstrap if bootstrap is not None else BOOTSTRAP_TASKS
+    res = GuidedArmResult(adaptive=adaptive)
+    g = res.guidance
+    fp = assert_verifier_unchanged(oracles, "guided.start")
+
+    # wave 0: train the adaptive PRM on the system's own OE solutions of the
+    # bootstrap tasks (the frozen arm skips this -> its PRM stays untrained).
+    if adaptive:
+        for tn in bootstrap:
+            if tn not in oracles:
+                continue
+            sol = oe_solve(oracles[tn].public_view(), blocks=[], max_size=12,
+                           eval_budget=90_000)
+            if sol is not None and oracles[tn].verify(sol):
+                g.train_on(sol, oracles[tn].public_view())
+    g.record_digest()
+
+    # the frozen arm never trains, so extra waves cannot change its result; run a
+    # single wave for it (the adaptive arm uses every wave to learn).
+    effective_waves = waves if adaptive else 1
+    for w in range(effective_waves):
+        newly: List[Tuple[str, Node]] = []
+        for tn in order:
+            if tn in res.adopted:
+                continue
+            orc = oracles[tn]
+            prog, st = prm_beam_synthesize(orc.public_view(), g.prm, [],
+                                           width=width, max_layers=layers,
+                                           verify=orc.verify)
+            res.best_partial[tn] = max(res.best_partial.get(tn, 0.0), st.best_partial)
+            if _guided_adopt_ok(prog, orc):
+                res.adopted[tn] = prog
+                res.channel[tn] = "prm-beam"
+                newly.append((tn, prog))
+                if verbose:
+                    print(f"  [{'A' if adaptive else 'F'} wave{w}] solved {tn} "
+                          f"via prm-beam")
+        if adaptive:
+            for tn, prog in newly:
+                g.train_on(prog, oracles[tn].public_view())
+        g.record_digest()
+        if not newly and w > 0:
+            break
+    res.open_tasks = [t for t in order if t not in res.adopted]
+    assert_verifier_unchanged(oracles, "guided.end")
     return res
