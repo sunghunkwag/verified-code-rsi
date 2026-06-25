@@ -54,10 +54,11 @@ from .rsi import Guidance
 # OE+memetic reach probe -- see emergence._reach_attack.)
 PROBE_OE = 8_000
 PROBE_MEMETIC = 6_000
-PROBE_BEAM = (6, 12)           # (width, layers)
+PROBE_BEAM = (5, 10)           # (width, layers)
 ATTACK_OE = 40_000
 ATTACK_MEMETIC = 46_000
-ATTACK_BEAM = (16, 22)
+ATTACK_BEAM = (10, 14)         # the scan-enabled beam is memory-heavy on OPEN
+                               # tasks; kept modest (OE+memetic carry the solves)
 LIBRARY_CAP = 12
 
 
@@ -311,10 +312,15 @@ def run_openended(generations: int = 6, batch: int = 8, seed: int = 0,
         registered: List[Tuple[GenSpec, SealedOracle, dict]] = []
 
         # --- the generation pool: base generated tasks + M3 non-shallow mints --- #
+        from .generator import _f_scan
         pool: List[GenSpec] = []
         for i in range(batch):
             crng = random.Random(seed * 1009 + gen * 97 + i)
-            sp = generate_spec(crng, gen, i, blocks=library)
+            # reserve one slot per generation for the stateful scan family so the
+            # system reliably EXPLORES it (the family that seeds the scan lineage);
+            # the rest are family-free, so the curriculum stays self-directed.
+            fam = _f_scan if i == 0 else None
+            sp = generate_spec(crng, gen, i, blocks=library, family=fam)
             if sp is not None:
                 pool.append(sp)
         # M3: compose the system's OWN verified solved references into structurally-
@@ -330,7 +336,10 @@ def run_openended(generations: int = 6, batch: int = 8, seed: int = 0,
             for sp in mint_curriculum(solved_refs, mint_registry,
                                       n=max(4, batch), blocks=library):
                 if "twice" in sp.note:
-                    pool.append(sp)
+                    # the deep reach target: recorded for the strong measurement,
+                    # NOT attacked in-loop (it is OPEN until the encapsulated block
+                    # exists, so an in-loop attack would only burn full budget on a
+                    # task the measurement re-attacks with/without the block anyway).
                     res.reach_targets.append(sp)
                 else:
                     skill_mints.append(sp)

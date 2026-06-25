@@ -79,17 +79,24 @@ the verify procedure source; the run aborts if it changes).
 ```
 rsi_core.py        thin CLI entry point (--mode demo | counterfactual | test)
 vcrsi/
-  ir.py            typed IR: programs as data; library blocks; inlining; pp
+  ir.py            typed IR: programs as data; library blocks; inlining; pp.
+                   Stateful combinators map/filter/foldl + (Phase E) scan/iterate
   interp.py        resource-budgeted, side-effect-free executor (physical root)
   tasks.py         the §6A-whitelist task suite + reference solutions (in the IR)
   oracle.py        the sealed, hash-pinned correctness oracle (verifier root)
   complexity.py    the machine-checked complexity floor (§6B)
   search.py        the LLM-free synthesizer (sampling + memetic local search)
-  library.py       the evolvable policy genome (weights + mined/encapsulated blocks)
+  search_oe.py     bottom-up observational-equivalence synthesizer (abstraction-first)
+  library.py       the evolvable policy genome (weights + mined/encapsulated blocks);
+                   M2 multi-objective abstraction score + composite/anti-cheat predicates
+  generator.py     ORACLE-BLIND self-generation + (Phase E) M3 non-shallow minting
+  openended.py     the open-ended loop (triple lock, skill-build, encapsulation)
+  emergence.py     (Phase E) the STRONG invented-capability measurement (§3)
   rsi.py           the RSI loop: weight learning, META-GATE, encapsulation, lineage
   counterfactual.py  adaptive vs frozen arms at equal budget/seeds
-  controls.py      the anti-cheat controls (§4) as runnable checks
-  report.py        --mode demo / counterfactual reports
+  controls.py      the anti-cheat controls (§4/§5) as runnable checks
+  report.py        --mode demo / counterfactual / solve-hard / openended /
+                   emergence / test drivers
 ```
 
 ---

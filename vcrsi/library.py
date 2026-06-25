@@ -439,18 +439,21 @@ def is_nontrivial_abstraction(block: Block) -> bool:
 
 
 def _leaf_kinds(n: Node, lits: List[int], params: List[int]) -> None:
-    if n.op in ("lit", "var"):
+    if n.op == "lit":
         lits.append(1)
-    elif n.op in ("param", "arg"):
+    elif n.op in ("param", "arg", "var"):
+        # param/arg consume the input argument; var (it/acc) consumes the iterated
+        # element / threaded accumulator -- both are INPUT-derived, NOT constants.
         params.append(1)
     for k in n.kids:
         _leaf_kinds(k, lits, params)
 
 
 def input_coupled(block: Block) -> float:
-    """Fraction of the block body's LEAVES that consume an input (a param/arg)
-    rather than a pushed constant. A constant-pushing macro scores 0 -> its
-    anti_cheat term is 0 -> it cannot be credited (control abstraction_anti_trivial)."""
+    """Fraction of the block body's LEAVES that consume an input (a param/arg, or
+    the loop variables it/acc which thread the iterated input) rather than a pushed
+    constant. A constant-pushing macro scores 0 -> its anti_cheat term is 0 -> it
+    cannot be credited (control abstraction_anti_trivial)."""
     lits: List[int] = []
     params: List[int] = []
     _leaf_kinds(block.body, lits, params)

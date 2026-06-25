@@ -49,26 +49,29 @@ from .openended import attack, solved_and_floor_ok, OpenEndedResult, _bm
 from .rsi import Guidance
 
 # The reach counterfactual budget -- IDENTICAL for the with-b and without-b arms,
-# so a credit is never an artefact of unequal budget. Uses the OE (blocks-first
-# M1) + memetic channels; the slow PRM beam adds nothing to the deep twice-tasks.
-REACH_OE = 60_000
-REACH_MEMETIC = 40_000
+# so a credit is never an artefact of unequal budget. The memetic search with a
+# high block-call probability finds a block-using solution FAST when one exists
+# (M1 abstraction-first); the bottom-up OE is a backup (it explodes with a large
+# library, so it gets a small budget).
+REACH_MEMETIC = 110_000
+REACH_BLOCK_PROB = 0.5
+REACH_OE = 40_000
 
 
 def _reach_attack(orc: SealedOracle, library: List[Block]
                   ) -> Optional[Node]:
-    """The deterministic reach probe: bottom-up OE (newest blocks enumerated FIRST,
-    M1) then the memetic search, both with the given library. Returns a holdout-
-    verified, floor-clearing program or None. Equal budget for every call."""
+    """The deterministic reach probe: the memetic search (newest blocks reused
+    first, M1) then a bounded bottom-up OE, both with the given library. Returns a
+    holdout-verified, floor-clearing program or None. Equal budget for every call."""
     bm = _bm(library)
-    p = oe_solve(orc.public_view(), blocks=library, max_size=12,
-                 eval_budget=REACH_OE)
-    if solved_and_floor_ok(p, orc, library):
-        return p
     pol = stateful_policy()
     pol.blocks = list(library)
-    pol.block_prob = 0.35 if library else 0.0
+    pol.block_prob = REACH_BLOCK_PROB if library else 0.0
     p, _ = synthesize(orc.public_view(), pol, REACH_MEMETIC, seed=7)
+    if solved_and_floor_ok(p, orc, library):
+        return p
+    p = oe_solve(orc.public_view(), blocks=library, max_size=10,
+                 eval_budget=REACH_OE)
     if solved_and_floor_ok(p, orc, library):
         return p
     return None
@@ -216,7 +219,11 @@ def measure_strong(res: OpenEndedResult, hard_suite: List[SealedOracle]
     seed_set = set(res.seed_blocks)                   # pre-seeded (empty)
     credited_names: set = set()
 
-    minted_oracles = [SealedOracle(sp) for sp in _dedup_targets(res.reach_targets)]
+    # bound the reach probe set: the de-duped deep minted tasks (capped) + the hard
+    # suite families. One credited capability is sufficient for the headline; the
+    # cap keeps the measurement tractable and deterministic.
+    minted_oracles = [SealedOracle(sp)
+                      for sp in _dedup_targets(res.reach_targets)[:8]]
     out.reach_target_names = [o.task.name for o in minted_oracles]
     targets = minted_oracles + list(hard_suite)
 

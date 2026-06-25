@@ -181,10 +181,14 @@ def oe_solve(view, blocks: Optional[List[Block]] = None, max_size: int = 10,
             pools = [bank.pool(pt, cap) for pt in b.ptypes]
             if any(not p for p in pools):
                 continue
+            cnt = 0
             for combo in itertools.product(*pools):
                 node = Node("call", b.rtype, tuple(c[0] for c in combo), b.name)
                 if node.size() <= max_size:
                     new.append((node, b.rtype, sigfn(node)))
+                cnt += 1
+                if cnt >= cap * 6:           # cap block combos (a multi-param block
+                    break                    # would otherwise explode the budget)
         for name, (rt, ats, _fn) in PRIMS.items():
             pools = [bank.pool(at, cap) for at in ats]
             if any(not p for p in pools):
