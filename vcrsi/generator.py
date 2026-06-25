@@ -275,10 +275,9 @@ def _f_scan(rng, blocks, hard):
     # (width+1) keeps the task non-degenerate AND within the search's reach (a
     # running-min from 0 would collapse to a constant, and a prefix-SUM landscape
     # is beyond the stochastic search). The +1 shift makes this behaviourally
-    # DISTINCT from the sealed external ext_running_max_width (no minting-to-
-    # memorise), while still USING the width sub-program so the loop mines the
-    # width atom and encapsulates the scan-on-width capability that seeds the
-    # stateful lineage.
+    # DISTINCT from every sealed external held-out task (no minting-to-memorise),
+    # while still USING the width sub-program so the loop mines the width atom and
+    # encapsulates the scan-on-width capability that seeds the stateful lineage.
     width = _b("sub", _b("snd", _it()), _b("fst", _it()))
     ref = _b("scan", _arg(0, "L"), _lit(0),
              _b("imax", _acc(), _b("add", width, _lit(1))))
