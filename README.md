@@ -229,3 +229,123 @@ structured pair-lists, each clearing the §6B floor) synthesized LLM-free and
 gated on held-out tests; a positive, reproducible adaptive-vs-frozen delta; and
 the recursion (block-on-block lineage) and reward-hacking controls passing on a
 real run.
+
+---
+
+# Phase B — cross-family transfer (the strong claim, measured)
+
+Phase A proved **within-family** reuse (RLE-decode blocks lift harder RLE tasks).
+Phase B tests the harder, more meaningful claim:
+
+> **STRONG CLAIM:** a library block MINED while solving family A becomes
+> *load-bearing* in an adopted, held-out solution of a structurally-different
+> family B (load-bearing = removal makes the task OPEN), AND survives a Socratic
+> counterexample search (no distinguishing input vs the sealed reference).
+
+## The five ported mechanisms (each independently ablatable)
+
+| module | mechanism | role |
+|---|---|---|
+| `search_oe.py` | **M1** bottom-up observational-equivalence solver | a 2nd deterministic solver; clean minimal blocks (dedup on public I/O, holdout sealed) |
+| `transfer.py` | **M2** signature-based transfer trigger | decides *which* family-A blocks are candidates for a B-task (public shapes only) |
+| `normalize.py` | **M3** verified normalizer | canonicalises a block to a family-agnostic form; accepted only if kernel-equivalent |
+| `socratic.py` | **M4** Socratic gate (CEGIS) | rejects *spurious* transfer via a distinguishing-input search judged by the sealed reference |
+| `archive.py` | **M5** MAP-Elites archive | quality-diversity, anti-collapse; mining draws across families |
+
+The task suite (`tasks.py`) is extended to **7 structural families** (the
+`family_diversity` control asserts ≥4 families, largest ≤40% — measured: 7
+families, max 38%). The transfer experiment runs over 4 of them that host
+solvable tasks: `seqcode` (string, map), `interval` (int-pair → int-pair, map),
+`select` (int-pair filter), `project` (int-pair → int, map).
+
+## Measured result (`--mode transfer`, rotate-B, all mechanisms on)
+
+```
+detector self-test (positive control): PASS -- planted A->B transfer:
+   load_bearing=True, socratic_admit=True, cross_group=True, spurious_rejected=True
+
+ROTATE-B MATRIX (all 5 mechanisms ON):
+  held-out B   frozen  adaptive  lib_blocks  cross-family-transfers
+  seqcode        2        1          1       0
+  interval       0        0          4       0
+  select         1        2          4       1
+      project->select block B3 in drop_short: load_bearing=True socratic=True [COUNTS]
+  project        1        1          3       0
+
+TOTAL CROSS-FAMILY transfer_families (load-bearing AND Socratic) = 1
+```
+
+The matrix is reproducible (two same-seed runs produce the identical matrix).
+
+Ablation (`--mode ablation`) — cross-family transfers per configuration:
+
+```
+  config    cross-family transfers
+  all-on            1
+  M1-off            0      <- the transfer DISAPPEARS without M1
+  M2-off            1
+  M3-off            1
+  M4-off            1
+  M5-off            0      <- the transfer DISAPPEARS without M5
+```
+
+## The result, stated bluntly: cross-family transfer is REAL but SHALLOW (exactly 1)
+
+There is **exactly one** measured cross-family transfer, and it is genuine under
+the full strong-claim definition: the block `B3` (the interval **width**
+computation `sub(snd($0), fst($0))`) is mined from the `project` family while
+`select` is held out (B-blind), appears in the adopted, held-out-passing solution
+of `drop_short` (a `select` task), is **load-bearing** there (removing it and
+re-synthesizing at equal budget/seed leaves the task OPEN), and **survives the
+Socratic gate** (no distinguishing input over 120 fresh probes vs the sealed
+reference). The detector self-test passes and the Socratic gate rejects a planted
+spurious block, so this positive is credible, not an artefact.
+
+It is genuinely cross-family: `project` is a map-projection (int-pair → int list)
+and `select` is a filter-selection (keep int-pairs by predicate) — different
+combinator, different output structure — and `width` plays a different role in
+each (the value projected vs the value thresholded). This is library reuse of a
+learned utility across structurally different algorithms.
+
+But it is **shallow**, and the matrix says exactly where transfer can and cannot
+happen:
+
+1. **Cross-TYPE transfer is 0.** The IR is typed; `seqcode` blocks are
+   string-typed (`srepeat`, `sconcat`) and cannot even be invoked in the int-pair
+   families. No block ever transfers across the string/int boundary.
+
+2. **Only a small shared utility transfers — no large algorithmic block does.**
+   The one transfer is a 3-op width utility. A *large* block is load-bearing only
+   if it captures a big chunk of B's solution, and two structurally-different
+   families sharing a big chunk would make them re-skins (which the suite
+   forbids). So transfer is confined to small utilities shared by same-typed
+   families.
+
+3. **The ablation localises the cause.** The transfer needs **M1** (the bottom-up
+   OE solver, which yields the *clean minimal* width block — the stochastic
+   search alone produces bloated, non-transferable blocks) **and M5** (the
+   MAP-Elites archive, which keeps the `project` block available cross-family;
+   collapse mode drops it). It is robust to disabling M2/M3/M4 — those are
+   candidate-filters and validators, not enablers, so removing them cannot create
+   or destroy a genuine transfer.
+
+The honest conclusion: **within-family RSI works (Phase A, positive counterfactual
+delta, above); cross-family transfer of a mined block is REAL but minimal — one
+shared utility between two
+type-compatible families, enabled specifically by clean-block synthesis (M1) and
+quality-diversity spread (M5).** It does NOT extend across data types, and no
+*large* algorithmic abstraction transfers, because the structure that genuinely
+generalises across families (the `map`/`filter`/`fold` control skeleton) is
+already a primitive, leaving only small first-order utilities for a mined block to
+carry. The enrichment that would deepen this is *higher-order* lifting — blocks
+parameterised by a function body, abstracting the control skeleton with a
+family-specific hole — which the current first-order block representation cannot
+express. That is named as the next step, not faked here.
+
+## Phase B audit commands
+
+| command | what it shows |
+|---|---|
+| `python rsi_core.py --mode transfer` | rotate-B matrix, B-blind mining, per-block load-bearing + Socratic proofs, detector self-test |
+| `python rsi_core.py --mode ablation` | cross-family transfers per mechanism-ablation configuration |
+| `python rsi_core.py --mode test` | all Phase-A + Phase-B controls (diversity, B-blind, normalizer, OE-leakage, archive-spread, Socratic-rejects-spurious, detector, ablation-runs) |

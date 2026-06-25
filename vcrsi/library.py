@@ -69,22 +69,32 @@ def default_policy() -> Policy:
         # accessors / constructors common to list/string/pair transforms
         "fst": 6.0, "snd": 6.0, "head": 1.6, "tail": 1.4, "cons": 2.0,
         "lapp": 2.6, "lsingle": 2.6, "lrev": 2.4,
-        # string processing ops (the domain is structured-text/seq transforms)
+        # string processing ops
         "sconcat": 6.0, "srepeat": 6.0, "schars": 4.0, "schr": 4.0, "sord": 4.0,
         # arithmetic that shows up in codecs / counters
         "add": 2.6, "sub": 2.6, "inc": 1.4, "dec": 1.2,
-        # leaves -- bare it/acc are kept LOW vs accessors: when the element is a
-        # pair/char you almost always need fst/snd/sord, not the raw element, so
-        # over-weighting raw it/acc floods int/string slots with useless values
+        # leaves -- bare it/acc are kept LOW vs accessors
         "arg": 4.0, "it": 1.6, "acc": 1.2, "lit_int": 0.8,
         # down-weight rarely-useful generic ops so they don't flood the grammar
-        "eqv": 0.4, "eqi": 0.4, "and": 0.3, "or": 0.3, "not": 0.3, "gt": 0.5,
+        "eqv": 0.4, "eqi": 0.4, "and": 0.4, "or": 0.4, "not": 0.4, "gt": 0.5,
         "lt": 0.5, "le": 0.5, "lit_bool": 0.3, "lit_nil": 0.5, "lit_estr": 0.5,
         "lit_pair": 0.3, "imax": 0.4, "imin": 0.4, "sdiv": 0.3, "smod": 0.3,
-        "mul": 0.6, "lrange": 0.4, "ltake": 0.5, "ldrop": 0.5, "slen": 0.5,
+        "mul": 0.6, "lrange": 0.4, "ltake": 0.6, "ldrop": 0.6, "slen": 0.5,
         "llen": 0.5, "snth": 0.6, "nth": 0.6, "llast": 1.2, "linit": 1.2,
         "lsort": 0.8, "lempty": 0.6, "pair": 1.0,
     }
+    return Policy(weights=w, blocks=[], block_prob=0.0, version=0)
+
+
+def broad_policy() -> Policy:
+    """A FAMILY-NEUTRAL prior used only by the Phase-B transfer experiment, where
+    the suite spans string AND int-pair families. It balances integer/pair/
+    comparison ops up to string ops so int-pair tasks are reachable. (The Phase-A
+    default above stays string-biased so the RLE counterfactual is unaffected.)"""
+    w = dict(default_policy().weights)
+    w.update({"filter": 4.0, "pair": 4.0, "add": 4.0, "sub": 4.0, "mul": 2.6,
+              "imax": 2.4, "imin": 2.0, "sdiv": 1.6, "gt": 2.4, "lt": 2.4,
+              "le": 2.4, "and": 1.8, "or": 1.2, "eqi": 1.0})
     return Policy(weights=w, blocks=[], block_prob=0.0, version=0)
 
 

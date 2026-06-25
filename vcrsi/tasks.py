@@ -98,6 +98,7 @@ class Task:
     n_holdout: int = 24
     roundtrip_with: Optional[str] = None   # family-2 identity partner
     note: str = ""
+    group: str = ""                   # structural-shape family (for transfer §4)
 
 
 # --------------------------------------------------------------------------- #
@@ -166,6 +167,27 @@ def _gen_bytecode(rng: random.Random, scale: int) -> Tuple[Any, ...]:
 def _gen_charlist(rng: random.Random, scale: int) -> Tuple[Any, ...]:
     k = rng.randint(max(2, scale), scale + 3)
     return ([rng.choice(_ALPHA) for _ in range(k)],)
+
+
+# -- Phase B generators: int-pair families (intervals) ---------------------- #
+def _gen_ivk(rng: random.Random, scale: int) -> Tuple[Any, ...]:
+    """A list of (a, a+w) intervals (a may be negative) plus one int knob."""
+    k = rng.randint(max(2, scale - 1), scale + 2)
+    ivs = [( (a := rng.randint(-6, 18)), a + rng.randint(0, 7)) for _ in range(k)]
+    return (ivs, rng.randint(1, 4))
+
+
+def _gen_ivk2(rng: random.Random, scale: int) -> Tuple[Any, ...]:
+    k = rng.randint(max(2, scale - 1), scale + 2)
+    ivs = [( (a := rng.randint(-6, 18)), a + rng.randint(0, 7)) for _ in range(k)]
+    lo = rng.randint(-4, 6)
+    return (ivs, lo, lo + rng.randint(2, 10))
+
+
+def _gen_iv(rng: random.Random, scale: int) -> Tuple[Any, ...]:
+    k = rng.randint(max(2, scale - 1), scale + 2)
+    ivs = [( (a := rng.randint(-6, 18)), a + rng.randint(0, 7)) for _ in range(k)]
+    return (ivs,)
 
 
 # --------------------------------------------------------------------------- #
@@ -298,6 +320,59 @@ def _ref_bracket_depths() -> Node:
              b("lapp", acc(), b("lsingle", b("add", cur, delta))))
 
 
+# -- Phase B references: genuinely distinct SOLVABLE families --------------- #
+# F2 "interval": int-pair -> int-pair, map combinator
+def _ref_shift_intervals() -> Node:
+    return b("map", arg(0, "L"),
+             b("pair", b("add", b("fst", it()), arg(1, "I")),
+               b("add", b("snd", it()), arg(1, "I"))))
+
+
+def _ref_widen_intervals() -> Node:
+    return b("map", arg(0, "L"),
+             b("pair", b("sub", b("fst", it()), arg(1, "I")),
+               b("add", b("snd", it()), arg(1, "I"))))
+
+
+def _ref_clamp_low() -> Node:
+    return b("map", arg(0, "L"),
+             b("pair", b("imax", b("fst", it()), lit(0)),
+               b("imax", b("snd", it()), lit(0))))
+
+
+# F3 "select": int-pair filter combinator
+def _ref_keep_wide() -> Node:
+    return b("filter", arg(0, "L"),
+             b("gt", b("sub", b("snd", it()), b("fst", it())), arg(1, "I")))
+
+
+def _ref_drop_short() -> Node:
+    return b("filter", arg(0, "L"),
+             b("le", b("sub", b("snd", it()), b("fst", it())), arg(1, "I")))
+
+
+def _ref_keep_band() -> Node:
+    return b("filter", arg(0, "L"),
+             b("and", b("le", arg(1, "I"), b("fst", it())),
+               b("le", b("snd", it()), arg(2, "I"))))
+
+
+# F4 "project": int-pair -> int (scalar) list, map combinator
+def _ref_scaled_widths() -> Node:
+    return b("map", arg(0, "L"),
+             b("mul", b("sub", b("snd", it()), b("fst", it())), arg(1, "I")))
+
+
+def _ref_midpoints() -> Node:
+    return b("map", arg(0, "L"),
+             b("sdiv", b("add", b("fst", it()), b("snd", it())), lit(2)))
+
+
+def _ref_clamped_widths() -> Node:
+    return b("map", arg(0, "L"),
+             b("imax", b("sub", b("snd", it()), b("fst", it())), arg(1, "I")))
+
+
 SUITE: List[Task] = [
     # --- family 2: encoding transforms (round-trip) ----------------------- #
     Task("rle_decode", 2,
@@ -357,6 +432,59 @@ SUITE: List[Task] = [
          "Interpret a tiny stack bytecode (PUSH/ADD/MUL); return the final top.",
          ("L",), "V", _ref_bytecode_interp(), _gen_bytecode,
          note="hard frontier: stack-machine interpreter"),
+
+    # === Phase B: genuinely distinct SOLVABLE families (for transfer §4) === #
+    # F2 interval: int-pair -> int-pair (map)
+    Task("shift_intervals", 4, "Shift every interval (a,b) by arg1: (a+k,b+k).",
+         ("L", "I"), "L", _ref_shift_intervals(), _gen_ivk),
+    Task("widen_intervals", 4, "Widen every interval (a,b) to (a-k, b+k).",
+         ("L", "I"), "L", _ref_widen_intervals(), _gen_ivk),
+    Task("clamp_low", 4, "Clamp both endpoints of every interval up to >= 0.",
+         ("L",), "L", _ref_clamp_low(), _gen_iv),
+    # F3 select: int-pair filter
+    Task("keep_wide", 4, "Keep only intervals strictly wider than arg1.",
+         ("L", "I"), "L", _ref_keep_wide(), _gen_ivk),
+    Task("drop_short", 4, "Keep only intervals whose width is <= arg1.",
+         ("L", "I"), "L", _ref_drop_short(), _gen_ivk),
+    Task("keep_band", 3, "Keep intervals lying within the band [arg1, arg2].",
+         ("L", "I", "I"), "L", _ref_keep_band(), _gen_ivk2),
+    # F4 project: int-pair -> int (map)
+    Task("scaled_widths", 4, "List of interval widths each multiplied by arg1.",
+         ("L", "I"), "L", _ref_scaled_widths(), _gen_ivk),
+    Task("midpoints", 4, "List of interval midpoints (a+b)/2.",
+         ("L",), "L", _ref_midpoints(), _gen_iv),
+    Task("clamped_widths", 4, "List of interval widths each clamped up to >= arg1.",
+         ("L", "I"), "L", _ref_clamped_widths(), _gen_ivk),
 ]
 
+# Structural-shape family ("group") of each task -- for transfer (§4). This is a
+# finer, behaviour-based grouping than the §6A whitelist 'family' number.
+_GROUP_OF = {
+    "rle_decode": "seqcode", "rle_decode_rev": "seqcode",
+    "rle_decode_sorted": "seqcode", "rle_decode_twice": "seqcode",
+    "rle_decode_palindrome": "seqcode", "rle_decode_rev_twice": "seqcode",
+    "rle_rev_palindrome": "seqcode", "rle_rev_palindrome_twice": "seqcode",
+    "rle_decode_shift1": "seqcode", "caesar_encode": "codec",
+    "caesar_decode": "codec", "interleave_pairs": "interval",
+    "merge_intervals": "interval", "bracket_depths": "scan",
+    "bytecode_interp": "parse",
+    "shift_intervals": "interval", "widen_intervals": "interval",
+    "clamp_low": "interval", "keep_wide": "select", "drop_short": "select",
+    "keep_band": "select", "scaled_widths": "project",
+    "midpoints": "project", "clamped_widths": "project",
+}
+for _t in SUITE:
+    _t.group = _GROUP_OF.get(_t.name, "misc")
+
 SUITE_BY_NAME = {t.name: t for t in SUITE}
+
+# The transfer experiment (§4) operates on a balanced set of SOLVABLE families;
+# each is genuinely distinct (data type / combinator / output structure). 'parse'
+# (fold-based) is included in the suite for diversity but is OPEN, so it cannot
+# host adopted solutions and is excluded from the solvable transfer matrix.
+TRANSFER_FAMILIES = {
+    "seqcode":  ["rle_decode", "rle_decode_rev"],     # string, map  (OE-solvable)
+    "interval": ["shift_intervals", "clamp_low"],     # int-pair -> int-pair, map
+    "select":   ["keep_wide", "drop_short"],          # int-pair filter
+    "project":  ["clamped_widths", "scaled_widths"],  # int-pair -> int, map
+}
