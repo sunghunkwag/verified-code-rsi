@@ -640,8 +640,9 @@ def ctl_generator_is_oracle_blind(oracles) -> Tuple[bool, str]:
     src = inspect.getsource(G)
     forbidden = ["from .oracle", "from .tasks", "import oracle", "import tasks",
                  "build_oracles", "SealedOracle", "SUITE", "EMERGENCE_SET",
-                 "._holdout", "_make_example", ".verify(", "TRANSFER_FAMILIES",
-                 "task.reference", ".public_examples"]
+                 "EMERGENCE_BY_NAME", "ext_", "._holdout", "_make_example",
+                 ".verify(", "TRANSFER_FAMILIES", "task.reference",
+                 ".public_examples"]
     hits = [w for w in forbidden if w in src]
     # data-flow: generate_spec's parameters carry no oracle / external object.
     sig = str(inspect.signature(G.generate_spec)).lower()
@@ -661,29 +662,56 @@ def ctl_emergence_set_is_sealed(oracles) -> Tuple[bool, str]:
     from .generator import generate_spec
     from .tasks import EMERGENCE_SET
     from . import openended as OE
-    # (a) behavioural non-collision over a real generated pool
+    ext_names = {t.name for t in EMERGENCE_SET}
+    # (a) behavioural non-collision over a real generated pool, sampled across
+    #     several generations so the check is not a single-generation spot-test.
     collide = None
-    for i in range(24):
-        sp = generate_spec(random.Random(700 + i), 0, i, blocks=[])
-        if sp is None:
-            continue
-        for et in EMERGENCE_SET:
-            if sp.arg_types == et.arg_types and \
-               _beh_eq(sp.reference, sp.gen_input, et.reference, et.arg_types):
-                collide = (sp.name, et.name)
+    for g in range(3):
+        for i in range(12):
+            sp = generate_spec(random.Random(700 + g * 41 + i), g, i, blocks=[])
+            if sp is None:
+                continue
+            for et in EMERGENCE_SET:
+                if sp.arg_types == et.arg_types and \
+                   _beh_eq(sp.reference, sp.gen_input, et.reference, et.arg_types):
+                    collide = (sp.name, et.name)
+                    break
+            if collide:
                 break
         if collide:
             break
-    # (b) the loop's TRAINING functions never read the external set
+    # (b) source guard (defence in depth): the training functions reference no
+    #     external symbol (EMERGENCE_SET / EMERGENCE_BY_NAME / an ext_ task name).
     train_src = (inspect.getsource(OE.run_openended)
                  + inspect.getsource(OE.train_on_suite)
                  + inspect.getsource(OE.triple_lock)
                  + inspect.getsource(OE.attack))
-    train_blind = "EMERGENCE_SET" not in train_src
-    ok = collide is None and train_blind
+    src_blind = not any(tok in train_src for tok in
+                        ("EMERGENCE_SET", "EMERGENCE_BY_NAME", "ext_"))
+    # (c) DYNAMIC proof: record EVERY SealedOracle built during a real (tiny)
+    #     open-ended loop AND baseline suite-training run; assert NONE is an
+    #     external task. This proves training-blindness by data flow, not strings.
+    built: List[str] = []
+    real_SO = OE.SealedOracle
+
+    class _Rec(real_SO):
+        def __init__(self, task):
+            built.append(getattr(task, "name", "?"))
+            super().__init__(task)
+
+    try:
+        OE.SealedOracle = _Rec
+        OE.run_openended(generations=1, batch=3, seed=0)
+        OE.train_on_suite(3, seed=0)
+    finally:
+        OE.SealedOracle = real_SO
+    dyn_blind = len(built) > 0 and not (set(built) & ext_names)
+    ok = collide is None and src_blind and dyn_blind
     return ok, (f"no generated task behaviourally identical to an external task="
-                f"{collide is None} (collision={collide}); generation+training "
-                f"never reference the external set={train_blind}")
+                f"{collide is None} (collision={collide}); training source "
+                f"external-symbol-free={src_blind}; DYNAMIC: {len(built)} oracles "
+                f"built during training, external ones among them="
+                f"{sorted(set(built) & ext_names)} (must be []) -> blind={dyn_blind}")
 
 
 def ctl_no_self_congratulation(oracles) -> Tuple[bool, str]:
