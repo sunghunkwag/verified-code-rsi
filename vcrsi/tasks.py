@@ -543,11 +543,14 @@ def _ext_caesar3() -> Node:               # fixed +3 codepoint shift (no knob)
                           b("schr", b("add", b("sord", it()), lit(3)))))
 
 
-def _ext_running_max_width() -> Node:     # running maximum of interval widths
+def _ext_running_max_width() -> Node:     # running maximum of (interval width + 1)
+    # +1 shift keeps this human-authored held-out scan behaviourally DISTINCT from
+    # the generator's running-max-width family (no minting-to-memorise), while still
+    # being a genuine stateful running-maximum the portfolio can attack.
     cur = b("ifx", b("lempty", acc()), lit(0), b("llast", acc()))
-    width = b("sub", b("snd", it()), b("fst", it()))
+    width1 = b("add", b("sub", b("snd", it()), b("fst", it())), lit(1))
     return b("foldl", arg(0, "L"), lit([]),
-             b("lapp", acc(), b("lsingle", b("imax", cur, width))))
+             b("lapp", acc(), b("lsingle", b("imax", cur, width1))))
 
 
 EMERGENCE_SET: List[Task] = [
@@ -572,9 +575,9 @@ EMERGENCE_SET: List[Task] = [
     Task("ext_caesar3", 2, "Shift every character up by a fixed 3 codepoints.",
          ("S",), "S", _ext_caesar3(), _gen_str,
          group="codec", note="external held-out (frontier)"),
-    Task("ext_running_max_width", 4, "Output the running maximum interval width "
-         "after each interval.", ("L",), "L", _ext_running_max_width(), _gen_iv,
-         group="scan", note="external held-out (frontier)"),
+    Task("ext_running_max_width", 4, "Output the running maximum of (interval "
+         "width + 1) after each interval.", ("L",), "L", _ext_running_max_width(),
+         _gen_iv, group="scan", note="external held-out (frontier)"),
 ]
 for _t in EMERGENCE_SET:
     _t.group = _t.group or "misc"

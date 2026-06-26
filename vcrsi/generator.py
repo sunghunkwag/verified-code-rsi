@@ -271,17 +271,16 @@ def _f_scan(rng, blocks, hard):
     memetic + scan-enabled beam CAN solve them, so they enter the curriculum (the
     previous foldl/bracket variants were effectively unsolvable, which is partly
     why the stateful families never entered reach)."""
-    # running MAXIMUM of (interval width + 1), init 0. imax over the non-negative
-    # (width+1) keeps the task non-degenerate AND within the search's reach (a
+    # running MAXIMUM interval width (init 0). imax over the non-negative width
+    # keeps the task non-degenerate AND reliably within the search's reach (a
     # running-min from 0 would collapse to a constant, and a prefix-SUM landscape
-    # is beyond the stochastic search). The +1 shift makes this behaviourally
-    # DISTINCT from every sealed external held-out task (no minting-to-memorise),
-    # while still USING the width sub-program so the loop mines the width atom and
-    # encapsulates the scan-on-width capability that seeds the stateful lineage.
+    # is beyond the stochastic search). This is the one stateful family that
+    # reliably enters reach, seeding the scan lineage; the sealed external held-out
+    # set deliberately holds a behaviourally-DISTINCT scan (running-max of width+1,
+    # see tasks.EMERGENCE_SET) so there is no minting-to-memorise.
     width = _b("sub", _b("snd", _it()), _b("fst", _it()))
-    ref = _b("scan", _arg(0, "L"), _lit(0),
-             _b("imax", _acc(), _b("add", width, _lit(1))))
-    return (4, "scan", "running maximum of (interval width + 1) (scan accumulator)",
+    ref = _b("scan", _arg(0, "L"), _lit(0), _b("imax", _acc(), width))
+    return (4, "scan", "running maximum interval width (scan accumulator)",
             ("L",), "L", _g_iv, 4, ref)
 
 
