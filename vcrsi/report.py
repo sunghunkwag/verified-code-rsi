@@ -306,15 +306,19 @@ HARD_FAMILIES = {"merge_intervals", "bracket_depths", "bytecode_interp"}
 def run_solve_hard() -> int:
     oracles = build_oracles()
     fp = assert_verifier_unchanged(oracles, "solve-hard")
-    # the interval-scan family representative (held out of SUITE) -- attacked only
-    # so solve-hard can SHOW the scan primitive's reach. It is kept in a SEPARATE
-    # dict so the verifier fingerprint (computed over SUITE) is unchanged.
+    # an interval-scan representative (NOT in SUITE) -- attacked only so solve-hard
+    # can SHOW the Unlock-A scan primitive's reach: a running-maximum-width scan,
+    # the stateful shape that became expressible. Kept in a SEPARATE dict so the
+    # verifier fingerprint (computed over SUITE) is unchanged.
     from .oracle import SealedOracle
-    from .tasks import EMERGENCE_BY_NAME
+    from .tasks import Task, _gen_iv, b as _tb, arg as _targ, it as _tit, acc as _tacc, lit as _tlit
     attack_oracles = dict(oracles)
-    if "ext_running_max_width" in EMERGENCE_BY_NAME:
-        attack_oracles["ext_running_max_width"] = SealedOracle(
-            EMERGENCE_BY_NAME["ext_running_max_width"])
+    _rmw_ref = _tb("scan", _targ(0, "L"), _tlit(0),
+                   _tb("imax", _tacc(),
+                       _tb("sub", _tb("snd", _tit()), _tb("fst", _tit()))))
+    attack_oracles["running_max_width"] = SealedOracle(
+        Task("running_max_width", 4, "Running maximum interval width (scan).",
+             ("L",), "L", _rmw_ref, _gen_iv, group="scan"))
     print("=" * 78)
     print("VERIFIED-CODE-RSI -- SOLVE-HARD (full portfolio: OE + memetic + PRM-beam)")
     print(f"verifier_fp = {fp}")
@@ -332,8 +336,8 @@ def run_solve_hard() -> int:
     order = [t for t in SOLVE_HARD_ORDER if t in attack_oracles]
     # add the interval-scan family representative so the scan primitive's reach is
     # shown explicitly alongside the three deep suite families.
-    if "ext_running_max_width" in attack_oracles:
-        order = order + ["ext_running_max_width"]
+    if "running_max_width" in attack_oracles:
+        order = order + ["running_max_width"]
     for tn in order:
         orc = attack_oracles[tn]
         prog, ch, bp = _portfolio_attack(orc, g)
@@ -355,7 +359,7 @@ def run_solve_hard() -> int:
     # synthesise and bytecode/merge stay deep -- reported honestly, never hidden.
     print("-" * 78)
     print("STATEFUL-FAMILY REACH (with the Unlock-A scan/iterate primitives):")
-    statefuls = [("ext_running_max_width", "interval-scan (running max)"),
+    statefuls = [("running_max_width", "interval-scan (running max width)"),
                  ("bracket_depths", "scan (running bracket depth)"),
                  ("merge_intervals", "interval state-merge"),
                  ("bytecode_interp", "stack-machine interpreter")]
