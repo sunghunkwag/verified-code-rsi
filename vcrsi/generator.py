@@ -275,9 +275,9 @@ def _f_scan(rng, blocks, hard):
     # keeps the task non-degenerate AND reliably within the search's reach (a
     # running-min from 0 would collapse to a constant, and a prefix-SUM landscape
     # is beyond the stochastic search). This is the one stateful family that
-    # reliably enters reach, seeding the scan lineage; the sealed external held-out
-    # set deliberately holds a behaviourally-DISTINCT scan (running-max of width+1,
-    # see tasks.EMERGENCE_SET) so there is no minting-to-memorise.
+    # reliably enters reach, seeding the scan lineage; the sealed held-out set
+    # deliberately holds a behaviourally-DISTINCT scan (a width+1 variant) so there
+    # is no minting-to-memorise.
     width = _b("sub", _b("snd", _it()), _b("fst", _it()))
     ref = _b("scan", _arg(0, "L"), _lit(0), _b("imax", _acc(), width))
     return (4, "scan", "running maximum interval width (scan accumulator)",
