@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List
 
 from .ir import pp
-from .oracle import build_oracles, assert_verifier_unchanged
+from .oracle import build_oracles, assert_verifier_unchanged, SealedOracle
 from .complexity import complexity_floor, adopted_program_ops, MIN_SOLUTION_OPS
 from .rsi import run_arm, run_guided_arm, Guidance, GuidedArmResult, BOOTSTRAP_TASKS
 from .counterfactual import (run_counterfactual, DEFAULT_ORDER,
