@@ -50,31 +50,23 @@ from .rsi import Guidance
 
 # The reach counterfactual budget -- IDENTICAL for the with-b and without-b arms,
 # so a credit is never an artefact of unequal budget. The memetic search with a
-# high block-call probability finds a block-using solution FAST when one exists
-# (M1 abstraction-first); the bottom-up OE is a backup (it explodes with a large
-# library, so it gets a small budget).
-REACH_MEMETIC = 65_000
+# high block-call probability finds a block-using solution fast when one exists
+# (M1 abstraction-first); the bottom-up OE explodes with a large library and adds
+# nothing here, so the probe is memetic-only (deterministic, seed-fixed).
+REACH_MEMETIC = 70_000
 REACH_BLOCK_PROB = 0.5
-REACH_OE = 35_000
 
 
 def _reach_attack(orc: SealedOracle, library: List[Block]
                   ) -> Optional[Node]:
-    """The deterministic reach probe: the memetic search (newest blocks reused
-    first, M1) then a bounded bottom-up OE, both with the given library. Returns a
-    holdout-verified, floor-clearing program or None. Equal budget for every call."""
-    bm = _bm(library)
+    """The deterministic reach probe: the memetic search with a high block-call
+    probability (newest blocks reused first, M1). Returns a holdout-verified,
+    floor-clearing program or None. Equal budget for every call (both arms)."""
     pol = stateful_policy()
     pol.blocks = list(library)
     pol.block_prob = REACH_BLOCK_PROB if library else 0.0
     p, _ = synthesize(orc.public_view(), pol, REACH_MEMETIC, seed=7)
-    if solved_and_floor_ok(p, orc, library):
-        return p
-    p = oe_solve(orc.public_view(), blocks=library, max_size=10,
-                 eval_budget=REACH_OE)
-    if solved_and_floor_ok(p, orc, library):
-        return p
-    return None
+    return p if solved_and_floor_ok(p, orc, library) else None
 
 # The families the curated suite does NOT teach with a flat map/filter -- reaching
 # one of these is the "harder family" bonus of §3(4).
