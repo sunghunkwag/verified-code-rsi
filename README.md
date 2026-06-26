@@ -725,8 +725,8 @@ iterate(init, count, body)  bounded while/iterate-until: apply body up to `count
 ```
 
 These are **given building blocks, not the invented capability** — the point is what
-the system *composes* from them. Vertical slice: with `scan`, the interval-scan
-stateful family (`ext_running_max_width`) becomes solvable by the portfolio; it was
+the system *composes* from them. Vertical slice (`--mode solve-hard`): with `scan`, a
+running-maximum-width interval-scan task becomes solvable by the portfolio; it was
 previously OPEN. `bracket_depths` (needs a `'('` literal the solver cannot synthesise)
 and `merge_intervals`/`bytecode_interp` (very deep, task-specific bodies) stay OPEN.
 
