@@ -224,9 +224,19 @@ def _chk_str(x: Any) -> str:
 #                              ``count`` times (count clamped to MAX_LEN, so a
 #                              candidate cannot spin), threading ``acc`` and the
 #                              iteration index ``it``. Returns the final acc.
-COMBINATORS = {"map", "filter", "foldl", "scan", "iterate", "ifx"}
+#   pipe(f, g)                 two-stage composition g . f (Unlock A): evaluate the
+#                              first stage ``f`` over the inputs, then evaluate the
+#                              second stage ``g`` with arg(0) REBOUND to f's result
+#                              (other args unchanged). This is the structural unit a
+#                              backward decomposition (decompose.py) emits when it
+#                              splits a hard target into two in-reach sub-functions
+#                              and composes them -- exactly how an interpreter is
+#                              written (tokenise -> evaluate). It is a GIVEN building
+#                              block; what matters is what the system DECOMPOSES INTO
+#                              and whether the discovered sub-functions emerge (§3).
+COMBINATORS = {"map", "filter", "foldl", "scan", "iterate", "ifx", "pipe"}
 COMB_RTYPE = {"map": "L", "filter": "L", "foldl": "V", "scan": "L",
-              "iterate": "V", "ifx": "V"}
+              "iterate": "V", "ifx": "V", "pipe": "V"}
 
 
 # --------------------------------------------------------------------------- #

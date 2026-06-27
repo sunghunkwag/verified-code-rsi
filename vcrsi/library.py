@@ -37,6 +37,13 @@ class Policy:
     blocks: List[Block] = field(default_factory=list)
     block_prob: float = 0.0
     version: int = 0
+    # Atomic literals (ints / single chars) harvested from a task's PUBLIC inputs,
+    # offered as extra ``lit`` leaves during generation. Default EMPTY -> every
+    # policy that predates this (default/broad/stateful, and every counterfactual
+    # arm) generates byte-identically to before. Only the backward-decomposition
+    # engine sets this, so it can fill a hole whose answer needs an input-derived
+    # literal (e.g. a '(' bracket classifier) WITHOUT reading any sealed reference.
+    example_lits: Tuple = ()
 
     def w(self, key: str) -> float:
         return self.weights.get(key, 1.0)
@@ -45,8 +52,10 @@ class Policy:
         return {b.name: b for b in self.blocks}
 
     def clone(self) -> "Policy":
-        return Policy(dict(self.weights), list(self.blocks), self.block_prob,
-                     self.version)
+        p = Policy(dict(self.weights), list(self.blocks), self.block_prob,
+                   self.version)
+        p.example_lits = tuple(self.example_lits)
+        return p
 
     def fingerprint(self) -> str:
         h = hashlib.sha256()
@@ -199,13 +208,26 @@ def abstract_fragment(frag: Node) -> Optional[Tuple[Node, Tuple[str, ...], Tuple
     return body, ptypes, tuple(order)
 
 
+def _has_op(n: Node, op: str) -> bool:
+    if n.op == op:
+        return True
+    return any(_has_op(k, op) for k in n.kids)
+
+
 def _useful_fragments(prog: Node) -> List[Node]:
     """Candidate fragments to abstract: every subtree that is non-trivial in
-    size and is a genuine operator application (not a bare leaf)."""
+    size and is a genuine operator application (not a bare leaf).
+
+    Fragments that CONTAIN a ``pipe`` are skipped: pipe rebinds arg(0) for its
+    second stage, so the same ``arg(0)`` leaf means two different values across
+    the two stages -- the free-leaf abstractor would wrongly collapse them into a
+    single param. The decompose engine mints the pipe's sub-functions directly
+    (with correct, separate params), so nothing is lost by not re-mining them."""
     out: List[Node] = []
 
     def walk(n: Node):
-        if n.op not in ("lit", "arg", "var", "param") and n.size() >= 3:
+        if (n.op not in ("lit", "arg", "var", "param") and n.size() >= 3
+                and not _has_op(n, "pipe")):
             out.append(n)
         for k in n.kids:
             walk(k)

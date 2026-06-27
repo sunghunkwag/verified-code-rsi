@@ -949,6 +949,148 @@ def ctl_reach_unlock_is_load_bearing(oracles) -> Tuple[bool, str]:
                 f"(library->{[b.name for b in without]}) task OPEN={open_without}")
 
 
+# =========================================================================== #
+# REVERSE-ENGINEERING / STRICT-EMERGENCE controls (§5, this phase)              #
+# =========================================================================== #
+def ctl_decomposition_no_leakage(oracles) -> Tuple[bool, str]:
+    """§5.1: the backward-decomposition engine reads only PUBLIC examples + a verify
+    CALLBACK. Source/data-flow inspection: it imports no oracle/tasks module and
+    names no sealed reference / held-out battery / example generator. Functional:
+    it cracks a hard family and the winner passes the SEALED holdout VIA the oracle
+    (not via any data the engine could have peeked at)."""
+    from . import decompose as D
+    from .decompose import solve_by_decomposition
+    src = inspect.getsource(D)
+    forbidden = ["from .oracle", "from .tasks", "import oracle", "import tasks",
+                 "build_oracles", "SealedOracle", "SUITE", "EMERGENCE_SET",
+                 "._holdout", "_make_example", "_ref_", "task.reference",
+                 ".reference", ".public_examples = ", "._task"]
+    hits = [w for w in forbidden if w in src]
+    # data-flow: solve_by_decomposition's only oracle-derived input is the opaque
+    # ``verify`` callback (a Callable), never a Task / SealedOracle object.
+    sig = str(inspect.signature(solve_by_decomposition)).lower()
+    sig_clean = ("oracle" not in sig and "holdout" not in sig
+                 and "reference" not in sig and "task" not in sig)
+    # functional: crack bracket_depths; the SEALED oracle (not the engine) verifies.
+    orc = oracles["bracket_depths"]
+    dr = solve_by_decomposition(orc.public_view(), orc.verify, library=[],
+                                budget=60_000, round_idx=1)
+    cracked = dr.program is not None and dr.channel.startswith("decomposition")
+    sealed_ok = cracked and orc.verify(dr.program)        # independent re-execution
+    ok = (not hits) and sig_clean and sealed_ok
+    return ok, (f"decompose source oracle/tasks-free={not hits} (hits={hits}); "
+                f"signature carries only a verify callback={sig_clean}; cracked "
+                f"bracket_depths by {dr.skeleton} & SEALED-holdout verified={sealed_ok}")
+
+
+def ctl_emergent_is_cross_group_and_was_open(oracles) -> Tuple[bool, str]:
+    """§5.2: a credited capability must unlock a target in a DIFFERENT structural
+    group that was previously OPEN. Plant a genuine SAME-GROUP unlock (a block that
+    IS load-bearing on a previously-OPEN target in its OWN birth group) and assert
+    the strict measurement does NOT credit it -- while the transfer cell still shows
+    the load-bearing fact. The credit gate is shown (source) to require gp != birth."""
+    from .reverse_emergence import Discovered, measure_strict
+    from . import reverse_emergence as RE
+    sp, blk = _midpoint_twice_scenario()
+    if sp is None:
+        return False, "could not construct the planted same-group scenario"
+    orc = SealedOracle(sp)
+    grp = sp.group                                   # the target's structural group
+    # plant the unlocking block AS IF born in the SAME group as the target it unlocks
+    disc = [Discovered(blk, birth_group=grp, source_task="planted")]
+    res = measure_strict(disc, [], budget=60_000, targets=[orc])
+    row = res.transfer[0]
+    lb_same = row.cells.get(grp, (False, ""))[0]      # load-bearing in its own group
+    not_credited = (res.count == 0)                   # but NOT credited (same group)
+    # source: the credit gate requires a DIFFERENT group + composite + mined
+    gate = ("gp != d.birth_group" in inspect.getsource(RE.measure_strict))
+    ok = lb_same and not_credited and gate
+    return ok, (f"planted block load-bearing in its OWN group '{grp}'={lb_same}; "
+                f"strict count={res.count} (same-group NOT credited={not_credited}); "
+                f"credit gate requires cross-group (source)={gate}")
+
+
+def ctl_groups_not_gerrymandered(oracles) -> Tuple[bool, str]:
+    """§5.3: the structural grouping is FIXED and shape-based, not gerrymandered to
+    make adjacent tasks 'different'. Behaviourally-near tasks share a group; a
+    behaviourally-distinct pair lies in different groups; and the grouping is not a
+    one-task-per-group catch-all."""
+    from .reverse_emergence import STRUCT_GROUPS, group_of
+    from .tasks import SUITE_BY_NAME, EMERGENCE_BY_NAME
+    allt = dict(SUITE_BY_NAME)
+    allt.update(EMERGENCE_BY_NAME)
+    g = lambda n: group_of(allt[n].task if hasattr(allt[n], "task") else allt[n])
+    # near tasks MUST share a group (same computational shape)
+    near = [("shift_intervals", "widen_intervals"), ("keep_wide", "drop_short"),
+            ("rle_decode", "rle_decode_rev"), ("scaled_widths", "clamped_widths")]
+    near_ok = all(g(a) == g(b) for a, b in near if a in allt and b in allt)
+    # distinct shapes MUST be in different groups (groups track shape, not labels)
+    distinct = [("rle_decode", "shift_intervals"), ("keep_wide", "midpoints"),
+                ("caesar_encode", "bracket_depths")]
+    distinct_ok = all(g(a) != g(b) for a, b in distinct if a in allt and b in allt)
+    # not gerrymandered into singletons: many tasks per group on average, and the
+    # group set is exactly the fixed shape-based STRUCT_GROUPS keys.
+    used = {g(n) for n in allt}
+    fixed = used <= set(STRUCT_GROUPS) | {"misc"}
+    not_singleton = len(used) < len(allt) / 2
+    ok = near_ok and distinct_ok and fixed and not_singleton
+    return ok, (f"near tasks share group={near_ok}; distinct shapes differ="
+                f"{distinct_ok}; groups ⊆ fixed shape set={fixed}; not 1-per-task "
+                f"({len(used)} groups for {len(allt)} tasks)={not_singleton}")
+
+
+def ctl_emergent_is_composite_and_mined(oracles) -> Tuple[bool, str]:
+    """§5.4 (re-asserted for the strict measure): a credited b is irreducible to one
+    primitive AND mined (disjoint from the given primitive/combinator vocabulary and
+    the empty seed library). A single-primitive block and a seed-origin block are
+    both ineligible; measure_strict gates credit on both predicates (source)."""
+    from .reverse_emergence import _is_mined_not_given
+    from . import reverse_emergence as RE
+    from .library import is_composite
+    one_prim = Block("Done", ("L",), _pb("lrev", Node("param", "L", const=0)),
+                     "L", origin="decomposed")
+    seeded = Block("Dseed", ("I", "I"),
+                   _pb("add", Node("param", "I", const=0),
+                       Node("param", "I", const=1)), "I", origin="seed")
+    genuine = Block("Dok", ("S",),
+                    _pb("ifx", _pb("eqv", Node("param", "S", const=0),
+                        Node("lit", "S", const="(")), Node("lit", "I", const=1),
+                        Node("lit", "I", const=-1)), "I", origin="decomposed")
+    rej_prim = not is_composite(one_prim)              # single primitive -> rejected
+    rej_seed = not _is_mined_not_given(seeded)         # given/seeded -> rejected
+    acc_genuine = is_composite(genuine) and _is_mined_not_given(genuine)
+    src = inspect.getsource(RE.measure_strict)
+    gated = ("is_composite(b)" in src) and ("_is_mined_not_given(b)" in src)
+    ok = rej_prim and rej_seed and acc_genuine and gated
+    return ok, (f"single-primitive composite-credited={not rej_prim} (must be "
+                f"False); seed-origin mined-credited={not rej_seed} (must be False); "
+                f"genuine decomposed block composite&mined={acc_genuine}; "
+                f"measure_strict gates on both (source)={gated}")
+
+
+def ctl_hard_family_solutions_are_holdout_verified(oracles) -> Tuple[bool, str]:
+    """§5.6: any hard family reported SOLVED passes its SEALED held-out battery (no
+    overfit to public examples), and a deliberately WRONG solver program FAILS that
+    battery. The engine's final gate is the verify callback (source)."""
+    from .decompose import solve_by_decomposition
+    import inspect as _i
+    from . import decompose as D
+    orc = oracles["bracket_depths"]
+    dr = solve_by_decomposition(orc.public_view(), orc.verify, library=[],
+                                budget=60_000, round_idx=1)
+    solved_holdout = dr.program is not None and orc.verify(dr.program)
+    # a wrong solver (identity on the string arg) must FAIL the sealed battery
+    wrong = Node("arg", "S", const=0)
+    wrong_fails = not orc.verify(wrong)
+    # the engine accepts a composite ONLY after verify(cand) (the sealed gate)
+    src = _i.getsource(D.solve_by_decomposition)
+    final_gate = "verify(cand)" in src and "verify(p)" in src
+    ok = solved_holdout and wrong_fails and final_gate
+    return ok, (f"decomposition crack passes SEALED holdout={solved_holdout}; wrong "
+                f"solver fails the battery={wrong_fails}; engine's final gate is the "
+                f"verify callback (source)={final_gate}")
+
+
 # --------------------------------------------------------------------------- #
 # registry + runner                                                            #
 # --------------------------------------------------------------------------- #
@@ -994,6 +1136,14 @@ CONTROLS: List[Tuple[str, Callable]] = [
     ("minting_not_shallow (§5.3)", ctl_minting_not_shallow),
     ("abstraction_anti_trivial (§5.4)", ctl_abstraction_anti_trivial),
     ("reach_unlock_is_load_bearing (§5.5)", ctl_reach_unlock_is_load_bearing),
+    # --- REVERSE-ENGINEERING / STRICT cross-group emergence controls (§5) --- #
+    ("decomposition_no_leakage (§5.1)", ctl_decomposition_no_leakage),
+    ("emergent_is_cross_group_and_was_open (§5.2)",
+     ctl_emergent_is_cross_group_and_was_open),
+    ("groups_not_gerrymandered (§5.3)", ctl_groups_not_gerrymandered),
+    ("emergent_is_composite_and_mined (§5.4)", ctl_emergent_is_composite_and_mined),
+    ("hard_family_solutions_are_holdout_verified (§5.6)",
+     ctl_hard_family_solutions_are_holdout_verified),
 ]
 
 

@@ -180,6 +180,24 @@ def _ev(node: Node, ctx: _Ctx) -> Any:
         ctx.loop_depth -= 1
         return acc
 
+    if op == "pipe":
+        # two-stage composition g . f: evaluate stage1 over the current args, then
+        # evaluate stage2 with arg(0) REBOUND to stage1's result (the intermediate
+        # value flows down the pipe). Other args are left untouched. Counted as a
+        # composition frame so the floor's exec-depth metric sees the extra stage.
+        v1 = _ev(node.kids[0], ctx)
+        saved = ctx.args
+        ctx.args = (v1,) + tuple(saved[1:])
+        ctx.loop_depth += 1
+        ctx.max_trace_depth = max(ctx.max_trace_depth, ctx.loop_depth)
+        ctx.iters += 1
+        try:
+            res = _ev(node.kids[1], ctx)
+        finally:
+            ctx.args = saved
+            ctx.loop_depth -= 1
+        return res
+
     if op == "call":
         blk = ctx.blocks.get(node.const)
         if blk is None:

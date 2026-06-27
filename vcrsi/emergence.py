@@ -57,15 +57,17 @@ REACH_MEMETIC = 70_000
 REACH_BLOCK_PROB = 0.5
 
 
-def _reach_attack(orc: SealedOracle, library: List[Block]
-                  ) -> Optional[Node]:
+def _reach_attack(orc: SealedOracle, library: List[Block],
+                  budget: Optional[int] = None) -> Optional[Node]:
     """The deterministic reach probe: the memetic search with a high block-call
     probability (newest blocks reused first, M1). Returns a holdout-verified,
-    floor-clearing program or None. Equal budget for every call (both arms)."""
+    floor-clearing program or None. Equal budget for every call (both arms).
+    ``budget`` defaults to REACH_MEMETIC; the strict cross-group measurement passes
+    a smaller equal budget so its larger matrix stays tractable."""
     pol = stateful_policy()
     pol.blocks = list(library)
     pol.block_prob = REACH_BLOCK_PROB if library else 0.0
-    p, _ = synthesize(orc.public_view(), pol, REACH_MEMETIC, seed=7)
+    p, _ = synthesize(orc.public_view(), pol, budget or REACH_MEMETIC, seed=7)
     return p if solved_and_floor_ok(p, orc, library) else None
 
 # The families the curated suite does NOT teach with a flat map/filter -- reaching
@@ -163,7 +165,7 @@ def _solution_uses(prog: Node, dropped: set) -> bool:
 
 
 def reach_unlock(b: Block, target: SealedOracle, full_lib: List[Block],
-                 guidance: Guidance) -> Optional[dict]:
+                 guidance: Guidance, budget: Optional[int] = None) -> Optional[dict]:
     """Return a proof dict iff ``target`` is solved WITH the full library but OPEN
     with the library MINUS b (and its dependents), and the surviving solution
     actually calls b / a b-dependent. The with-b and without-b probes use the
@@ -171,12 +173,12 @@ def reach_unlock(b: Block, target: SealedOracle, full_lib: List[Block],
     gain, not a budget artefact."""
     without = library_without(full_lib, b.name)
     dropped = _dependents(b.name, full_lib)
-    prog_with = _reach_attack(target, full_lib)
+    prog_with = _reach_attack(target, full_lib, budget)
     if prog_with is None:
         return None
     if not _solution_uses(prog_with, dropped):
         return None                                   # b not load-bearing here
-    prog_without = _reach_attack(target, without)
+    prog_without = _reach_attack(target, without, budget)
     if prog_without is not None:
         return None                                   # solvable without b -> no unlock
     return {"solution": pp(prog_with),

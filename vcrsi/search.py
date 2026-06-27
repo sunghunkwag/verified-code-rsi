@@ -119,6 +119,9 @@ def node_type(n: Node, scope: Dict[str, str], arg_types: Tuple[str, ...]) -> str
         return node_type(n.kids[1], scope, arg_types)
     if op == "iterate":
         return node_type(n.kids[0], scope, arg_types)
+    if op == "pipe":
+        # pipe(f, g) returns g's type (the second stage's output).
+        return node_type(n.kids[1], scope, arg_types)
     if op in PRIMS:
         return PRIMS[op][0]
     return n.rtype
@@ -203,6 +206,13 @@ class _Gen:
         for node, t in scope:
             if tmatch(t, rtype):
                 out.append((node, self._w(_term_key(node))))
+        # literals harvested from the task's PUBLIC inputs (decompose engine only;
+        # empty for every standard policy -> standard runs are byte-identical).
+        for v in self.policy.example_lits:
+            t = "S" if isinstance(v, str) else \
+                "B" if isinstance(v, bool) else "I" if isinstance(v, int) else None
+            if t is not None and tmatch(t, rtype):
+                out.append((Node("lit", t, const=v), self._w("lit_example")))
         return out
 
     def _producer_ops(self, rtype: str) -> List[str]:
