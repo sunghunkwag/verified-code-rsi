@@ -185,22 +185,36 @@ def target_universe() -> List[SealedOracle]:
     return out
 
 
-def _applicable(b: Block, orc: SealedOracle) -> bool:
-    """Cheap type prefilter: could a solution to ``orc`` even CALL ``b``? b's
-    params must be constructible from the task's arg/element types and b's result
-    must plug into the output or an element. Skips hopeless (b, target) probes so
-    the matrix stays tractable; it never credits anything by itself."""
-    view = orc.public_view()
-    avail = set(view.arg_types) | {"I", "V"}
+def _elem_type_of(view) -> str:
     exs = view.public_examples
     la = next((i for i, t in enumerate(view.arg_types) if t == "L"), None)
     if la is not None and exs and exs[0][0][la]:
         v = exs[0][0][la][0]
-        avail.add("P" if isinstance(v, tuple) else "S" if isinstance(v, str)
-                  else "I" if isinstance(v, int) else "L")
+        return ("P" if isinstance(v, tuple) else "S" if isinstance(v, str)
+                else "I" if isinstance(v, int) else "L")
+    return "V"
+
+
+def _applicable(b: Block, orc: SealedOracle) -> bool:
+    """Type prefilter: could ``b`` even be LOAD-BEARING in a solution to ``orc``?
+    b's params must be constructible from the task's arg/element types AND b's
+    result must plug into the OUTPUT or an output ELEMENT (the only places a called
+    block can be load-bearing). Skips hopeless (b, target) probes so the matrix
+    stays tractable; it never credits anything by itself."""
+    view = orc.public_view()
+    elem = _elem_type_of(view)
+    avail = set(view.arg_types) | {elem, "I", "V"}
     if not all((pt in avail) or pt == "V" for pt in b.ptypes):
         return False
-    return b.rtype in (view.out_type, "V", "L", "I", "S")
+    # block result must be the output type or the output's element type
+    out_elem = "V"
+    exs = view.public_examples
+    if view.out_type == "L" and exs and isinstance(exs[0][1], list) and exs[0][1]:
+        ov = exs[0][1][0]
+        out_elem = ("P" if isinstance(ov, tuple) else "S" if isinstance(ov, str)
+                    else "B" if isinstance(ov, bool) else "I" if isinstance(ov, int)
+                    else "L")
+    return b.rtype == view.out_type or b.rtype == out_elem
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +272,7 @@ class StrictResult:
     transfer: List[TransferRow] = field(default_factory=list)
     groups: Tuple[str, ...] = ()
     reach_probes: int = 0
+    capped: bool = False              # True if the probe budget cap was hit
     verifier_fp: str = ""
 
     @property
@@ -287,7 +302,7 @@ def _is_mined_not_given(b: Block) -> bool:
 def measure_strict(discovered: List[Discovered], hard_outcomes: List[HardOutcome],
                    budget: int = 40_000, guidance: Optional[Guidance] = None,
                    targets: Optional[List[SealedOracle]] = None,
-                   per_group: int = 3) -> StrictResult:
+                   per_group: int = 3, max_probes: int = 64) -> StrictResult:
     """Build the bidirectional transfer matrix and credit every abstraction meeting
     all four §3 conditions. Equal-budget reach probes via emergence.reach_unlock.
     ``targets`` defaults to the full suite+external universe; a control passes a
@@ -316,6 +331,9 @@ def measure_strict(discovered: List[Discovered], hard_outcomes: List[HardOutcome
             for orc in by_group.get(gp, []):
                 if not _applicable(b, orc):
                     continue
+                if res.reach_probes >= max_probes:
+                    res.capped = True
+                    break
                 res.reach_probes += 1
                 proof = reach_unlock(b, orc, [b], g, budget=budget)
                 if proof is not None:

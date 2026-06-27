@@ -468,7 +468,7 @@ def run_openended_mode() -> int:
 # --------------------------------------------------------------------------- #
 # Equal-budget reach probe + decomposition discovery budgets (regenerable).
 EMERGENCE_DISCOVER_BUDGET = 38_000
-EMERGENCE_REACH_BUDGET = 28_000
+EMERGENCE_REACH_BUDGET = 20_000
 EMERGENCE_PER_GROUP = 2
 
 
@@ -518,8 +518,8 @@ def _print_transfer_matrix(res, detailed: bool = False) -> None:
     print("A row load-bearing only in its own birth group is LOCAL; one reaching a")
     print("DIFFERENT group is the quantitative signature of real emergence.")
     groups = res.groups
-    print("  %-9s| %s" % ("abstr\\grp",
-                          " ".join("%-9s" % g[:9] for g in groups)))
+    print("  %-14s| %s" % ("abstr \\ group",
+                           " ".join("%-9s" % g[:9] for g in groups)))
     for row in res.transfer:
         cells = []
         for g in groups:
@@ -530,8 +530,8 @@ def _print_transfer_matrix(res, detailed: bool = False) -> None:
             else:
                 cells.append("%-9s" % "--")
         verdict = "CROSS-GROUP" if row.reaches_cross_group() else "LOCAL"
-        print("  %-9s| %s  [%s, birth=%s]" %
-              (row.block, " ".join(cells), verdict, row.birth_group))
+        print("  %-14s| %s [%s, birth=%s]" %
+              (row.block[:14], " ".join(cells), verdict, row.birth_group))
     print("  (* marks a cross-group load-bearing cell -- a strict-emergence credit.)")
     if detailed:
         print("-" * 78)
