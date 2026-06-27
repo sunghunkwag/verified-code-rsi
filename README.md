@@ -1,1051 +1,171 @@
 # verified-code-rsi
 
-Verification-grounded recursive self-improvement of **genuinely multi-step
-programs**, with **no language model** anywhere in the loop.
+Verification-grounded **recursive self-improvement of genuinely multi-step
+programs** — with **no language model anywhere in the loop**.
 
-A budgeted stochastic/genetic search synthesizes programs in a typed
-intermediate representation. Every solution is gated by a **sealed, hash-pinned
-correctness oracle** (a hidden held-out test battery). The search improves *its
-own* ability to synthesize programs by evolving a policy genome (operator
-weights + a library of mined subroutines), and that improvement is reported as
-exactly one thing: a **measured solved-count delta over a frozen counterfactual**
-at equal budget and equal seeds. Nothing is asserted; the delta is the claim.
+A budgeted, LLM-free search (stochastic/genetic + bottom-up observational
+equivalence + a learned PRM-guided beam + a backward-decomposition channel)
+synthesizes programs in a typed intermediate representation. Every candidate is
+gated by a **sealed, hash-pinned correctness oracle** (a hidden held-out
+battery). Self-improvement is reported as exactly one thing: a **measured
+solved-count delta over a frozen counterfactual** at equal budget and equal
+seeds. Nothing is asserted; the delta is the claim.
 
-This replaces a previous ~50,000-line monolith whose RSI machinery was real but
-whose *domain* was a toy (integer-list arithmetic — `sum`/`count`/`max` — solved
-by 2–5 instructions of a stack VM whose opcodes were already high-level
-reductions). The toy domain is deleted. What survives is the one genuinely
-verification-grounded discipline of that monolith's native-kernel section:
-*build the verifier first, datafy the candidate, verify bit-exact, measure
-against a frozen counterfactual.* This system is **~9,300 physical lines incl.
-comments** across Phases A–F — roughly a fifth of the deleted monolith. The
-Phase-F reverse-engineering layer (`decompose.py` + `reverse_emergence.py`) is
-~910 of them: the backward-decomposition solver channel and the strict
-cross-group emergence measurement — a small multiple, not a balloon.
+`verifier_fp = 841c6f6277e7c8ef` — a hash over every reference + held-out battery
++ the verify procedure source. The run aborts if it ever changes.
 
 ---
 
-## What the run actually produces (regenerable; see Audit Protocol)
-
-From a fixed seeded run on this machine:
+## What it does
 
 ```
---mode test            : 39/39 anti-cheat controls PASS; verifier_fp unchanged
---mode solve-hard      : full portfolio + the 4th channel, backward DECOMPOSITION
-                         (Unlock B). bracket_depths -- a previously-OPEN hard family
-                         -- is now SOLVED by decomposition (scan_step skeleton),
-                         sealed-holdout verified. merge_intervals / bytecode_interp
-                         stay OPEN, each with a located dependency gap
---mode emergence       : (Phase F) the STRICT cross-domain count (§3) -- composite
-                         + mined + CROSS-GROUP + previously-OPEN + load-bearing.
-                         >>> STRICT CROSS-GROUP EMERGENCE COUNT = 0 <<<  Backward
-                         decomposition CRACKS a hard family and mines 3 composite
-                         abstractions, but every one stays LOCAL to its birth group.
-                         The exact absent bridge is located (not waved away)
---mode transfer-matrix : the bidirectional abstraction x structural-group matrix --
-                         3 discovered abstractions, all LOCAL, 0 general. The
-                         quantitative heart of the honest finding
---mode counterfactual  : TWO measured deltas, equal budget/seeds --
-   (a) LEARNED GUIDANCE (Phase C): frozen 0 vs adaptive 5  ->  DELTA (a) = +5
-   (b) MACRO LIBRARY (Phase A/B): frozen 4 vs adaptive 7  ->  DELTA (b) = +3
---mode openended       : the system invents its OWN tasks (a fresh sealed
-                         reference defines each), keeps only those passing the
-                         TRIPLE LOCK, solves what it can, trains on its OWN solves
---mode demo            : complexity table; solved/OPEN lists; library lineage;
-                         PRM digest evolution + world-model coverage
+python rsi_core.py --mode <mode>
 ```
 
-**Phase F** (latest) reverse-engineers the hard targets and tests emergence under a
-**stricter** definition that makes Phase E's demonstration explicitly *uncreditable*.
-Two new pieces: (A) **Unlock A** completes the IR with a two-stage `pipe` (compose
-`g∘f`) primitive; (B) **Unlock B** is a **backward-decomposition** solver channel —
-when the forward portfolio stalls it hypothesises a structural decomposition of the
-target into sub-functions individually in reach, solves the sub-pieces from PUBLIC
-examples, and composes them (exactly how a human writes an interpreter: tokenise →
-classify → run). This **cracks `bracket_depths`** — a previously-OPEN hard family —
-by splitting it into a `'('`-classifier and a running-sum scan (sealed-holdout
-verified). The discovered sub-functions are the candidates for the **strict §3
-emergence** test: an abstraction counts only if it is composite, mined (not given),
-**load-bearing on a previously-OPEN target in a DIFFERENT structural group**, and
-removal reverts that target to OPEN. Same-group reach (scan→scan — exactly Phase E's
-credited unlock) is **disallowed**. The measured headline is **STRICT CROSS-GROUP
-EMERGENCE COUNT = 0**: decomposition discovers three genuine composite abstractions,
-but the bidirectional transfer matrix shows every one is **LOCAL** to its birth
-group. `merge_intervals`/`bytecode_interp` stay OPEN — their decisive step is a fold
-whose intermediate state is *not observable from public I/O*, so no sub-piece can be
-isolated. This is a sixth measured negative, with the absent bridge located exactly;
-the full mechanism and proofs are in the **Phase F** section below.
+| mode | result |
+|---|---|
+| `test` | **39/39 anti-cheat controls PASS**; `verifier_fp` unchanged |
+| `solve-hard` | full portfolio + backward **DECOMPOSITION** (4th channel): **cracks `bracket_depths`** (previously OPEN); `merge_intervals`/`bytecode_interp` stay OPEN with a located gap |
+| `emergence` | **STRICT cross-group emergence count (§3) = 0** — the discovered abstractions are all LOCAL |
+| `transfer-matrix` | bidirectional abstraction × structural-group matrix: 3 abstractions, **0 general, 3 local** |
+| `counterfactual` | two measured deltas — learned-guidance **+5**, macro-library **+3** |
+| `openended` | the system invents its own tasks (sealed, self-verifying references), triple-locked |
+| `demo` | complexity table, solved/OPEN lists, library lineage, PRM/world-model digests |
 
-**Phase E** asks a stronger, truer question than Phase D's transfer delta:
-does the system **invent a composite capability it was never given as a primitive**,
-use it **load-bearing**, and does that invention **let it reach a family it could
-not reach before**? Two blocks caused Phase D's zero, and Phase E removes both:
-(A) the IR gains **stateful `scan`/`iterate` primitives** so genuinely-new structure
-is *expressible*; (B) an **invention engine** (abstraction-first enumeration,
-a multi-objective abstraction score, and non-shallow minting that changes
-computational *structure*, not just post-wraps an output). The measured headline is
-**INVENTED-CAPABILITY COUNT = 2**: the system mines two genuine **scan** abstractions
-from its own solutions and each unlocks a deep stateful task that primitives + the
-other blocks cannot reach at equal budget — every credit carries a composite-,
-load-bearing- and reach-unlock proof. The three deepest suite families
-(`bytecode_interp`/`merge_intervals`/`bracket_depths`) stay OPEN: the honest wall.
-The full mechanism, proofs, and honest bound are in the **Phase E** section below.
-
-**Phase D** removes the human-given target: the system **generates its own
-tasks** (a synthesised, sealed reference program *defines* each task's ground truth),
-keeps only those passing a machine-checked **triple lock** (whitelist / §6B floor /
-self-easiness), solves what it can, and trains on its own solutions. We then measure
-emergence against a **sealed external held-out set** the system never generates or
-trains on. The Phase-D measured result was **NO transfer** (delta −1 full / 0
-guidance-only): the mechanism worked and stayed toy-free, but the self-generated
-frontier re-covered what the curated suite already taught and could not reach the
-stateful families. Phase E diagnosed *why* (no stateful expressiveness, shallow
-minting) and fixed both — see below.
-
-**Phase C** makes the recursive self-improvement act on the *solver's own learned
-search guidance* — a process-reward model guiding a beam search, trained on the
-system's own solved programs. Delta (a) is the solver-self-improvement claim: the
-trained guidance synthesises a whole family of multi-step programs the frozen
-guidance cannot, and generalises to unseen tasks. The genuinely-hard stateful-`foldl`
-families remain OPEN and are reported as such (Phase C section explains exactly why).
-Phase A/B (within-family reuse + cross-family transfer) is unchanged below.
-
-`verifier_fp = 841c6f6277e7c8ef` (hash over every reference + held-out battery +
-the verify procedure source; the run aborts if it changes).
+Same seed → byte-identical digests.
 
 ---
 
-## Architecture (modules)
+## The discipline
+
+- **Verifier first.** The oracle is built before the synthesizer. The search
+  receives only a *public view* (spec + a few public examples); it never sees the
+  reference solution or the held-out battery.
+- **Structured, multi-step tasks only.** Every task is on a §6A whitelist
+  (parsing, codecs, intervals, graphs, state machines) and clears a
+  machine-checked §6B complexity floor (≥5 distinct ops, a loop, an auxiliary
+  structure, exec-depth ≥6). No flat-integer-array toys.
+- **Containment is structural.** The IR has no file/process/network/`eval`
+  primitive, so a candidate *cannot express* an escape; every run is
+  CPU/allocation/recursion bounded.
+- **Improvement = a measured delta.** Adaptive vs a frozen copy of the same
+  policy genome, equal budget and seeds, reproducible to a byte-identical digest.
+
+---
+
+## The headline experiment — reverse-engineered emergence (Phase F)
+
+**Question.** With stateful expressiveness *and* a reverse-engineering engine,
+does *real cross-domain* recursive self-improvement emerge?
+
+**Two new pieces.**
+- *Unlock A* — a two-stage **`pipe`** (compose `g∘f`) IR primitive.
+- *Unlock B* — a **backward-decomposition** solver channel: when the forward
+  portfolio stalls, it hypothesises a *skeleton with a typed hole*, derives the
+  hole's I/O from PUBLIC examples + the skeleton's shape alone (e.g. per-step
+  deltas = first-differences of a running-accumulator output), solves the
+  sub-pieces, and composes them — exactly how a human writes an interpreter
+  (tokenise → classify → run). It imports no oracle/task module; the holdout is an
+  opaque `verify` callback used only as the final gate.
+
+**Strict definition (§3).** An abstraction is EMERGENT only if it is **composite**,
+**mined** (not given), **load-bearing on a previously-OPEN target in a DIFFERENT
+structural group**, and removal reverts that target to OPEN — all at equal budget.
+Same-group reach (scan→scan) is **disallowed**, which is what makes the earlier
+phases' demonstrations uncreditable.
+
+**Measured result.**
 
 ```
-rsi_core.py        thin CLI entry point (--mode demo | solve-hard | emergence |
-                   transfer-matrix | counterfactual | openended | test | ...)
+abstr \ group | codec  interval  merge  parse  project  scan  select  seqcode
+Dstep1        |  --      --       --      --      --      LB     --       --     [LOCAL, birth=scan]
+Dscan1        |  --      --       --      --      --      --     --       --     [LOCAL, birth=scan]
+Dpre_sortrev1 |  --      --       --      --      --      --     --       --     [LOCAL, birth=seqcode]
+>>> STRICT CROSS-GROUP EMERGENCE COUNT = 0 <<<
+```
+
+- Decomposition **cracks `bracket_depths`** (OPEN through five prior phases) by
+  splitting it into a `'('`-classifier and a running-sum scan; sealed-holdout
+  verified.
+- It discovers **3 composite abstractions** — and the matrix shows **every one is
+  LOCAL** to its birth group.
+- `merge_intervals`/`bytecode_interp` stay OPEN: their decisive step is a fold
+  whose intermediate state is **not observable from public I/O**, so no sub-piece
+  can be isolated.
+
+This is the honest, intended outcome: a previously-impossible hard family solved
+by reverse-engineering, **no manufactured positive**, and the absent cross-domain
+bridge located exactly. Reproducible digest `2d84f7e039e7ca8d`.
+
+---
+
+## The honest scope bound
+
+"All domains" means **all domains whose correctness is checkable**. The mechanism
+is domain-general (it operates over the general IR and task space, not hardcoded
+families), but capabilities with no cheap verifier remain out of reach **by
+construction, for everyone**. Emergence here means an un-designed composite
+capability arising *within the verifiable domain* — measured, not a singularity. A
+target is "real" only because its sealed reference defines a checkable ground truth.
+
+---
+
+## Measured results across phases
+
+| phase | claim | measured |
+|---|---|---|
+| A/B | within-family reuse + cross-family transfer | macro-library delta **+3**; cross-family transfer real but shallow (exactly 1) |
+| C | solver self-improvement via a learned PRM-guided beam | learned-guidance delta **+5** (3 of 5 unseen) |
+| D | open-ended self-generated curriculum | mechanism works, toy-free; external-transfer delta 0 (reported) |
+| E | invent a composite capability, used load-bearing | count 2 — but **same-group** (uncreditable under §3) |
+| F | strict cross-domain emergence via reverse-engineering | hard family cracked; **strict cross-group count = 0**, abstractions local |
+
+The positive deltas (A/B/C) are genuine *within-domain* self-improvement. The
+*cross-domain emergence* question is answered **no**, five times over, with the
+wall located exactly each time — the rarer and more honest result.
+
+---
+
+## Architecture
+
+```
+rsi_core.py            CLI: --mode demo|solve-hard|emergence|transfer-matrix|counterfactual|openended|test|...
 vcrsi/
-  ir.py            typed IR: programs as data; library blocks; inlining; pp.
-                   Stateful combinators map/filter/foldl + scan/iterate + (Phase F)
-                   the two-stage `pipe` (compose g∘f) -- Unlock A
-  interp.py        resource-budgeted, side-effect-free executor (physical root)
-  tasks.py         the §6A-whitelist task suite + reference solutions (in the IR)
-  oracle.py        the sealed, hash-pinned correctness oracle (verifier root)
-  complexity.py    the machine-checked complexity floor (§6B)
-  search.py        the LLM-free synthesizer (sampling + memetic local search);
-                   Policy.example_lits harvests public-input literals (Phase F)
-  search_oe.py     bottom-up observational-equivalence synthesizer (abstraction-first)
-  decompose.py     (Phase F / Unlock B) the BACKWARD-DECOMPOSITION solver channel:
-                   skeleton + typed-hole filling; public-only propose_intermediate_io
-  library.py       the evolvable policy genome (weights + mined/encapsulated blocks);
-                   M2 multi-objective abstraction score + composite/anti-cheat predicates
-  generator.py     ORACLE-BLIND self-generation + (Phase E) M3 non-shallow minting
-  openended.py     the open-ended loop (triple lock, skill-build, encapsulation)
-  emergence.py     (Phase E) the STRONG invented-capability measurement (§3) +
-                   the equal-budget reach_unlock counterfactual (reused by Phase F)
-  reverse_emergence.py  (Phase F) the STRICT cross-group emergence count + the
-                   bidirectional transfer matrix over decomposition-mined abstractions
-  rsi.py           the RSI loop: weight learning, META-GATE, encapsulation, lineage
-  counterfactual.py  adaptive vs frozen arms at equal budget/seeds
-  controls.py      the anti-cheat controls (§4/§5) as runnable checks (39)
-  report.py        --mode demo / solve-hard / emergence / transfer-matrix /
-                   counterfactual / openended / test drivers
+  ir.py / interp.py    typed IR (programs as data; map/filter/foldl/scan/iterate/pipe) + budgeted executor
+  oracle.py            sealed, hash-pinned correctness oracle (the verifier root)
+  complexity.py        machine-checked §6B complexity floor
+  tasks.py             §6A-whitelist suite + reference solutions + sealed external held-out set
+  search*.py           LLM-free synthesizers: memetic, bottom-up OE, PRM-guided beam
+  decompose.py         backward-decomposition solver channel (Unlock B)
+  library.py / rsi.py  evolvable policy genome + the RSI loop (weight learning, META-GATE, lineage)
+  generator.py / openended.py   oracle-blind self-generation + the open-ended loop
+  emergence.py         the (Phase E) strong measurement + the equal-budget reach_unlock counterfactual
+  reverse_emergence.py the (Phase F) strict cross-group emergence count + transfer matrix
+  controls.py          39 anti-cheat controls (run by --mode test)
 ```
 
 ---
 
-## Verifier first, and where the irreducible wall sits (F_eff / F_theo)
+## Anti-cheat (39 controls, all passing)
 
-The oracle was built **before** the generator. For each task the oracle generates
-public training examples (the only thing the synthesizer ever sees) and a hidden
-held-out battery at larger, unseen input sizes by running the task's reference
-solution. A candidate is correct iff it reproduces the reference's output exactly
-on the **full** held-out battery.
-
-Everything above the following two-part root is improvable / evolvable (the IR,
-the synthesizer, the operator weights, the subroutine library):
-
-1. **The correctness oracle** — the sealed held-out battery + reference, hashed
-   into `verifier_fp` and asserted unchanged on every run. **It cannot be
-   released.** Release it and "improvement" collapses into the trivial discovery
-   of *declaring victory* (reward hacking). This is proven constructively by the
-   reward-hacking control: a speed-only search with the oracle removed is won by
-   a wrong-but-fast program (the empty string, 6 interpreter steps), while the
-   oracle-gated search's winner is correct.
-
-2. **The physical executor** — the interpreter (`interp.py`) plus its CPU-step,
-   allocation and recursion budgets. **It cannot be released.** Release it and
-   "produces the right output" / "terminates" lose all meaning; there is nothing
-   left to ground correctness in.
-
-This is the F_eff/F_theo boundary stated honestly: the fixed layer does not
-vanish, it sits at exactly this load-bearing root. The boundary is demonstrated,
-not asserted — the reward-hacking control *shows* you cannot move it down.
-
-The sandbox is structural, not bolted on: the IR has **no** file, process,
-network or `eval`/`exec` primitive, so a candidate cannot express an escape; and
-every run is bounded, so a runaway loop or memory bomb is cut off and scored as
-failed rather than hanging the harness (verified by the sandbox-containment
-control).
+Each control is a falsifiable test of one way the system could be faked. They
+cover: no oracle leakage (source + data-flow), sandbox containment, held-out
+rejects overfit, reward-hacking floor, distinct genomes → distinct behaviour,
+determinism, block-on-block lineage, positive counterfactual deltas, and
+self-generation blindness — plus the Phase-F set: `decomposition_no_leakage`,
+`emergent_is_cross_group_and_was_open` (a same-group plant is **rejected**),
+`groups_not_gerrymandered`, `emergent_is_composite_and_mined`, and
+`hard_family_solutions_are_holdout_verified`. `verifier_fp` is re-checked before
+and after every run; any drift aborts it.
 
 ---
 
-## The task suite (§6A whitelist) and the complexity floor (§6B)
-
-Tasks are drawn only from the approved families (parsing/interpreting; encoding
-round-trips; graph/structure; interval/sequence restructuring; small state
-machines). Every input is structured (a string to parse, a list of pairs, …),
-never a flat integer array reduced to a scalar. The banned toy reductions
-(`sum`, `count`, `max`, …) are asserted absent.
-
-"Complex" is **computed**, never claimed. `complexity.complexity_floor(task)`
-derives, from the reference solution's AST plus an execution trace on the longest
-public example, four metrics that must all hold: ≥5 distinct non-trivial
-operations; a loop (or recursion) present; recursion or an auxiliary data
-structure built; and a dynamic execution depth ≥6. The per-task table is printed
-by `--mode demo`; a task that misses any threshold is rejected and cannot be
-counted. Adopted programs must additionally clear an inlined op-count floor (so a
-task cannot be "solved" by a below-floor program that hides work inside a
-subroutine).
-
-Per-task metrics from the run (`--mode demo`):
+## Reproduce
 
 ```
-task                     fam   ops  loop rec/ds depth   ok
-rle_decode                 2     5     Y      Y      7   OK
-rle_decode_rev             2     6     Y      Y      9   OK
-rle_decode_sorted          2     6     Y      Y      9   OK
-rle_decode_twice           2     6     Y      Y     14   OK
-rle_decode_palindrome      2     7     Y      Y     12   OK
-rle_decode_rev_twice       2     7     Y      Y     16   OK
-rle_rev_palindrome         2     8     Y      Y     12   OK
-rle_rev_palindrome_twice   2     8     Y      Y     36   OK
-caesar_encode              2     6     Y      Y      7   OK
-caesar_decode              2     6     Y      Y      8   OK
-rle_decode_shift1          2     9     Y      Y     29   OK
-interleave_pairs           4     5     Y      Y      9   OK
-merge_intervals            4    13     Y      Y      8   OK
-bracket_depths             4     9     Y      Y      8   OK
-bytecode_interp            1    10     Y      Y     10   OK
+python rsi_core.py --mode test            # 39/39 controls; verifier_fp unchanged
+python rsi_core.py --mode solve-hard      # hard-family ledger (decomposition cracks bracket_depths)
+python rsi_core.py --mode emergence       # strict cross-group count = 0, with the located dependency gap
+python rsi_core.py --mode transfer-matrix # general-vs-local matrix (digest 2d84f7e039e7ca8d)
+python rsi_core.py --mode counterfactual  # the two within-domain deltas (+5, +3)
 ```
-(All 15 tasks in the suite clear the floor; the counterfactual runs the 11-task
-`DEFAULT_ORDER` curriculum.)
-
----
-
-## The synthesizer (LLM-free)
-
-Candidates are typed IR programs (typed values incl. lists/strings/pairs, the
-combinators `map`/`filter`/`foldl`, conditionals, and callable library
-subroutines). Synthesis is weighted typed sampling under the policy genome,
-refined by a memetic local search (in-scope leaf swaps, fresh subtrees, and
-"wrapping" edits that grow structure around a correct fragment). There is no LLM
-call. Element typing is what makes accessor-heavy multi-step programs reachable:
-the loop variable `it` carries its concrete type (a pair, a char, …), so the
-generator reaches for `fst`/`snd` where the raw element would not type-check.
-
----
-
-## Recursive self-improvement, operationalized
-
-The policy genome is the only thing search behaviour depends on, so improving it
-is the only way the system improves its own search. Two evolvable channels:
-
-* **Weight learning** — operators appearing in solved programs are up-weighted,
-  concentrating the same budget on productive structure.
-* **Library** — subroutines are mined from solved programs and committed only if
-  they pass an empirical **META-GATE**: an A/B test on the unsolved frontier
-  (incumbent vs incumbent+candidate, equal budget and seeds) showing strictly
-  more newly-solved tasks, no regression on solved tasks, and `verifier_fp`
-  unchanged. An **encapsulation operator** (after SECTION 24 of the old monolith)
-  rewrites adopted solutions to call existing blocks and freezes recurring
-  block-containing patterns as new blocks — producing a **lineage** in which a
-  block's body references an earlier block.
-
-Lineage observed on a real run (the §4.8 control):
-`B0` (atom, round 3) → `B5` (calls `B0`, round 4) → `B6` (calls `B5`, round 7);
-every task's adopted solution uses a composed block, so all are load-bearing,
-and each child is created and first used strictly later than its parent.
-
----
-
-## Audit protocol (honest vs cheat signatures)
-
-| command | honest signature | cheat signature |
-|---|---|---|
-| `python rsi_core.py --mode demo` | real solved/OPEN counts + the §6B metrics table + a printed parent→child lineage pair | no OPEN tasks ever; no lineage; metrics missing or below floor |
-| `python rsi_core.py --mode counterfactual` (twice, same seed) | identical digests both times; **positive** adaptive−frozen delta | delta zero/negative but claimed positive; output differs between runs |
-| `python rsi_core.py --mode test` | every §4/§9 control passes; `verifier_fp` unchanged | a control missing, skipped, or trivially true |
-| auditor re-runs the held-out battery on each adopted program | recomputed solved-count == reported (control `recompute_solved_count`) | mismatch (reported count inflated) |
-| `--mode test` reward-hacking control | oracle-removed search won by a WRONG-but-fast program | removing the oracle changes nothing (oracle decorative) |
-| `grep -ri "self-invention\|open-ended\|agi\|unbounded\|emergent" .` | no hits over unproven behaviour | grandiose names over toy/unproven behaviour |
-| `wc -l` + Phase-0 greps | a small fraction of 50k; toy symbols absent | tens of thousands of lines; toy machinery present |
-
-Determinism: all randomness is seeded; an adoption log is a pure function of the
-seed. `--mode counterfactual` prints both arms' adoption digests and is
-byte-identical across two same-seed runs.
-
----
-
-## The honest wall (OPEN tasks) and the escape hatch (§13)
-
-These tasks remain **OPEN for both arms** at the run's budget and are reported as
-OPEN:
-
-* `caesar_encode` (family 2, substitution codec) — the per-character body
-  `schr(add(sord(it), shift))` is a deceptive, gradient-poor target: a wrong
-  shift produces zero common characters, so the fitness landscape is flat until
-  the exact body is hit. Reachable only with much larger budget or a learned
-  character-shift subroutine, which in turn requires a base-solvable task in that
-  sub-family to mine it from (absent here).
-* `merge_intervals`, `bracket_depths` (family 4) and `bytecode_interp` (family 1)
-  — their reference solutions are ~13–30 IR nodes with stateful `foldl`
-  accumulators; this is beyond what stochastic search + memetic local search
-  reaches at the budgets used, and no single mined subroutine collapses them into
-  range.
-
-This is the anti-toy guarantee in action: rather than retreat to easier tasks,
-the system reports the wall with evidence. The minimal IR enrichment that would
-move it: a **typed bottom-up enumerator for loop/fold bodies with observational
-equivalence** (so the stateful accumulator body of an interpreter or a merge is
-found systematically rather than sampled), and a **curriculum that makes each
-hard sub-pattern base-solvable in isolation** so it can be mined into a block and
-reused. Both are compatible with this architecture; neither is implemented here.
-
-What *is* demonstrated end-to-end and honestly measured: a verifier-first
-framework; a family of genuinely multi-step programs (run-length codecs over
-structured pair-lists, each clearing the §6B floor) synthesized LLM-free and
-gated on held-out tests; a positive, reproducible adaptive-vs-frozen delta; and
-the recursion (block-on-block lineage) and reward-hacking controls passing on a
-real run.
-
----
-
-# Phase B — cross-family transfer (the strong claim, measured)
-
-Phase A proved **within-family** reuse (RLE-decode blocks lift harder RLE tasks).
-Phase B tests the harder, more meaningful claim:
-
-> **STRONG CLAIM:** a library block MINED while solving family A becomes
-> *load-bearing* in an adopted, held-out solution of a structurally-different
-> family B (load-bearing = removal makes the task OPEN), AND survives a Socratic
-> counterexample search (no distinguishing input vs the sealed reference).
-
-## The five ported mechanisms (each independently ablatable)
-
-| module | mechanism | role |
-|---|---|---|
-| `search_oe.py` | **M1** bottom-up observational-equivalence solver | a 2nd deterministic solver; clean minimal blocks (dedup on public I/O, holdout sealed) |
-| `transfer.py` | **M2** signature-based transfer trigger | decides *which* family-A blocks are candidates for a B-task (public shapes only) |
-| `normalize.py` | **M3** verified normalizer | canonicalises a block to a family-agnostic form; accepted only if kernel-equivalent |
-| `socratic.py` | **M4** Socratic gate (CEGIS) | rejects *spurious* transfer via a distinguishing-input search judged by the sealed reference |
-| `archive.py` | **M5** MAP-Elites archive | quality-diversity, anti-collapse; mining draws across families |
-
-The task suite (`tasks.py`) is extended to **7 structural families** (the
-`family_diversity` control asserts ≥4 families, largest ≤40% — measured: 7
-families, max 38%). The transfer experiment runs over 4 of them that host
-solvable tasks: `seqcode` (string, map), `interval` (int-pair → int-pair, map),
-`select` (int-pair filter), `project` (int-pair → int, map).
-
-## Measured result (`--mode transfer`, rotate-B, all mechanisms on)
-
-```
-detector self-test (positive control): PASS -- planted A->B transfer:
-   load_bearing=True, socratic_admit=True, cross_group=True, spurious_rejected=True
-
-ROTATE-B MATRIX (all 5 mechanisms ON):
-  held-out B   frozen  adaptive  lib_blocks  cross-family-transfers
-  seqcode        2        1          1       0
-  interval       0        0          4       0
-  select         1        2          4       1
-      project->select block B3 in drop_short: load_bearing=True socratic=True [COUNTS]
-  project        1        1          3       0
-
-TOTAL CROSS-FAMILY transfer_families (load-bearing AND Socratic) = 1
-```
-
-The matrix is reproducible (two same-seed runs produce the identical matrix).
-
-Ablation (`--mode ablation`) — cross-family transfers per configuration:
-
-```
-  config    cross-family transfers
-  all-on            1
-  M1-off            0      <- the transfer DISAPPEARS without M1
-  M2-off            1
-  M3-off            1
-  M4-off            1
-  M5-off            0      <- the transfer DISAPPEARS without M5
-```
-
-## The result, stated bluntly: cross-family transfer is REAL but SHALLOW (exactly 1)
-
-There is **exactly one** measured cross-family transfer, and it is genuine under
-the full strong-claim definition: the block `B3` (the interval **width**
-computation `sub(snd($0), fst($0))`) is mined from the `project` family while
-`select` is held out (B-blind), appears in the adopted, held-out-passing solution
-of `drop_short` (a `select` task), is **load-bearing** there (removing it and
-re-synthesizing at equal budget/seed leaves the task OPEN), and **survives the
-Socratic gate** (no distinguishing input over 120 fresh probes vs the sealed
-reference). The detector self-test passes and the Socratic gate rejects a planted
-spurious block, so this positive is credible, not an artefact.
-
-It is genuinely cross-family: `project` is a map-projection (int-pair → int list)
-and `select` is a filter-selection (keep int-pairs by predicate) — different
-combinator, different output structure — and `width` plays a different role in
-each (the value projected vs the value thresholded). This is library reuse of a
-learned utility across structurally different algorithms.
-
-But it is **shallow**, and the matrix says exactly where transfer can and cannot
-happen:
-
-1. **Cross-TYPE transfer is 0.** The IR is typed; `seqcode` blocks are
-   string-typed (`srepeat`, `sconcat`) and cannot even be invoked in the int-pair
-   families. No block ever transfers across the string/int boundary.
-
-2. **Only a small shared utility transfers — no large algorithmic block does.**
-   The one transfer is a 3-op width utility. A *large* block is load-bearing only
-   if it captures a big chunk of B's solution, and two structurally-different
-   families sharing a big chunk would make them re-skins (which the suite
-   forbids). So transfer is confined to small utilities shared by same-typed
-   families.
-
-3. **The ablation localises the cause.** The transfer needs **M1** (the bottom-up
-   OE solver, which yields the *clean minimal* width block — the stochastic
-   search alone produces bloated, non-transferable blocks) **and M5** (the
-   MAP-Elites archive, which keeps the `project` block available cross-family;
-   collapse mode drops it). It is robust to disabling M2/M3/M4 — those are
-   candidate-filters and validators, not enablers, so removing them cannot create
-   or destroy a genuine transfer.
-
-The honest conclusion: **within-family RSI works (Phase A, positive counterfactual
-delta, above); cross-family transfer of a mined block is REAL but minimal — one
-shared utility between two
-type-compatible families, enabled specifically by clean-block synthesis (M1) and
-quality-diversity spread (M5).** It does NOT extend across data types, and no
-*large* algorithmic abstraction transfers, because the structure that genuinely
-generalises across families (the `map`/`filter`/`fold` control skeleton) is
-already a primitive, leaving only small first-order utilities for a mined block to
-carry. The enrichment that would deepen this is *higher-order* lifting — blocks
-parameterised by a function body, abstracting the control skeleton with a
-family-specific hole — which the current first-order block representation cannot
-express. That is named as the next step, not faked here.
-
-## Phase B audit commands
-
-| command | what it shows |
-|---|---|
-| `python rsi_core.py --mode transfer` | rotate-B matrix, B-blind mining, per-block load-bearing + Socratic proofs, detector self-test |
-| `python rsi_core.py --mode ablation` | cross-family transfers per mechanism-ablation configuration |
-| `python rsi_core.py --mode test` | all Phase-A + Phase-B controls (diversity, B-blind, normalizer, OE-leakage, archive-spread, Socratic-rejects-spurious, detector, ablation-runs) |
-
----
-
-# Phase C — recursive self-improvement of the SOLVER, via a learned process-reward model
-
-Phase B established by measurement that the binding constraint is **solver power on
-structurally-hard multi-step tasks**: the memetic + bottom-up-OE portfolio could not
-crack the genuinely hard families (`bytecode_interp`, `merge_intervals`,
-`bracket_depths`), so they stayed OPEN. Phase C attacks that constraint directly and
-relocates the recursive-self-improvement substrate to where it now matters: **the
-solver's own learned search guidance**, not just the macro library.
-
-The new substrate is a **process-reward model (PRM)** that ranks program *prefixes* for
-a beam search, plus a **world model** over op semantics — both trained on the system's
-**own solved programs** and persisted/improved across waves, measured against a frozen
-(wave-0, untrained) counterfactual.
-
-## The mechanism (M1–M3, implemented from scratch on the typed IR)
-
-| module | mechanism | what it is |
-|---|---|---|
-| `prm.py` | **M1** Process-Reward Model (`PRM`) | an **averaged perceptron** over an 8-feature vector of a *partial* program: `[exact, typed, near, single, crash, len, reused-block, bias]`. It sees only public train I/O + program structure — never the oracle, holdout, or family metadata. |
-| `prm_beam.py` | **M2** PRM-guided beam search | builds programs token-by-token in a **bottom-up postfix** representation (a stack of typed sub-expressions + at most one open combinator frame), keeping the top-`width` type-valid prefixes ranked by the PRM. `it`/`acc` body leaves are offered **only inside an open frame**, so stateful `foldl`/`map` bodies are reachable. A full candidate is admitted only when **train-exact AND holdout-passing** — the identical gate every channel uses. |
-| `world_model.py` | **M3** `OpSemanticsModel` | learns each primitive's semantics from observed `(args→result)` transitions by **acting on the interpreter** (`interp.op_step`, never the impl table), with a finite declared hypothesis prior (const / identity / projection / a binary or unary fn family). Predicts where a hypothesis or memo covers the case; **abstains honestly** otherwise. |
-
-**The crux — `prefix_features` runs a *partial* program.** A prefix is made runnable by
-**scope-aware completion**: each unfilled hole is closed with the best in-scope bound
-variable of the needed type (an identity fold uses `acc`; a per-element int hole grabs
-`snd(it)`), plus a one-step type coercion (`L`→`S` via `sconcat`) and a bounded one-op
-lookahead — so a half-built correct body reads as *near the target* while a wrong one
-does not. This monotone gradient is what the perceptron learns to rank on. A **frozen**
-PRM (all-zero weights) scores every prefix `0.0`, so its beam degenerates to a blind,
-deterministic breadth-first search — the counterfactual baseline.
-
-**The recursion is on the PRM + world model.** After each wave they are trained on the
-system's own newly-solved programs (and dead ends): every prefix on an adopted
-solution's derivation path is a `+1` example, every crashing/collapsing sibling a `-1`.
-The state persists across waves; a frozen state never learns. The macro-library RSI
-(Phase A/B) is kept too, and the two improvements are reported as **separate deltas**.
-
-## Measured result (`--mode counterfactual`, two deltas)
-
-```
-DELTA (a) -- LEARNED GUIDANCE (solver self-improvement):
-   frozen-guidance  solved  : 0  []
-   adaptive-guidance solved : 5  [rle_decode, rle_decode_rev, rle_decode_rev_twice,
-                                  rle_decode_shift1, rle_decode_sorted]
-   >>> SOLVER-SELF-IMPROVEMENT DELTA (a) = 5 - 0 = 5 <<<
-   PRM digest per wave      : [13c02e00becde144, a79cedec192c5ca5, a79cedec192c5ca5]
-
-DELTA (b) -- MACRO LIBRARY (Phase A/B, unchanged):
-   frozen 4, adaptive 7  ->  DELTA (b) = +3
-```
-
-The guidance delta is **load-bearing and reproducible**: trained on the bootstrap task's
-own OE solution, the PRM-guided beam cracks **5 seqcode/codec tasks that the frozen beam
-leaves OPEN at equal budget**, and **3 of those 5 are *unseen*** (`rle_decode_sorted`,
-`rle_decode_rev_twice`, `rle_decode_shift1`) — genuine cross-task generalisation, not
-memorisation (a fixed 8-weight model cannot store task answers; the
-`prm_is_cross_task_not_memorised` control asserts this). Same seed → byte-identical PRM
-digest and adoption log (`guidance_determinism`).
-
-## The hard families: cracked 0 of 3 (reported honestly, §7 escape hatch)
-
-`--mode solve-hard` runs the full portfolio (OE + memetic + PRM-beam) on the suite. The
-three genuinely-hard, previously-OPEN families **remain OPEN under every channel**,
-including the trained beam, and are reported with their best train-exact fraction:
-
-```
-task                 state   channel    best_partial
-merge_intervals [HARD]  OPEN    -          best_exact_frac=0.25
-bracket_depths  [HARD]  OPEN    -          best_exact_frac=0.25
-bytecode_interp [HARD]  OPEN    -          best_exact_frac=0.75
-```
-
-**Where the beam stalls, precisely.** The PRM-guided beam cracks the **seqcode/codec map
-family** (string output, whose `sconcat` coercion yields a sharp feature gradient) but
-not the stateful `foldl` families, for two compounding reasons the measurements isolate:
-
-1. **Int-list outputs give a mushy gradient.** The interval/project/select map families
-   (`scaled_widths`, `clamp_low`, …) output lists of ints/pairs; many partial programs
-   land at a similar `near`, so the productive prefix is not separated from junk and
-   falls off a finite-width beam. Their best-exact-fraction never reaches 1.0.
-2. **A non-monotone accumulator defeats the foldl probe.** `bytecode_interp` threads a
-   *stack* mutated non-monotonically by push/add/mul; the trace-sampled probe's
-   append-trajectory produces list-of-operands states, **not** the reduced-stack states a
-   correct interpreter threads, so the ADD/MUL branches stay uninformative until a
-   *mostly-correct* body already scores well — a bootstrapping chicken-and-egg the
-   width-24 beam cannot hold across the 9–13-op nested-`ifx` dispatch. (`bytecode_interp`
-   reaches `best_exact_frac=0.75` — partial-correct prefixes exist — but never closes.)
-
-**The honest conclusion:** the PRM-guided solver *self-improves measurably* — it learns,
-from its own solved programs, to synthesise an entire family of multi-step programs that
-the frozen solver cannot, and it generalises across tasks — **but the stateful-fold
-families (the stack-bytecode interpreter, interval merge, bracket scan) remain beyond
-LLM-free reach at this IR and beam budget, and the measurements say exactly why.** This
-is the §7 result, not a faked solve: the holdout/exactness gate is never relaxed, no hard
-task is swapped for an easier look-alike, and the OPEN families are reported with
-evidence. The named next step is a foldl-body probe whose accumulator trajectory is
-re-derived from the current best partial body (so the reachable stack states become
-observable) plus a wider beam — compatible with this architecture, not implemented here.
-
-## Phase C anti-cheat controls (all in `--mode test`, all passing)
-
-| control | what it proves |
-|---|---|
-| `prm_is_oracle_free` | the PRM + feature extractor reference neither the oracle, the holdout, nor family metadata — only public train I/O + program structure |
-| `prm_is_cross_task_not_memorised` | the PRM is a fixed 8-dim model whose parameters do not grow per task; a frozen PRM is load-bearing (scores zero, changes behaviour) |
-| `world_model_honest_abstention` | on an uncovered op the world model ABSTAINS (no fabrication); on covered cases predictions equal real execution (fuzz); it uses `op_step`, never the impl table |
-| `frozen_vs_adaptive_guidance_is_load_bearing` | ≥1 task solved by adaptive guidance is OPEN under frozen guidance at equal budget; remove the trained guidance and it reverts to OPEN |
-| `guidance_determinism` | same seed → byte-identical PRM digest and adoption log |
-
-All Phase-A and Phase-B controls still pass and `verifier_fp` is unchanged
-(`841c6f6277e7c8ef`): **23/23 controls PASS** at Phase C (Phase D adds 6 more →
-**29/29** total; see the Phase D section).
-
-## Phase C audit commands
-
-| command | what it shows |
-|---|---|
-| `python rsi_core.py --mode solve-hard` | full portfolio on the suite incl. the hard families; per-task solved/OPEN, solving channel, and best-partial for OPEN tasks |
-| `python rsi_core.py --mode counterfactual` | **both** deltas: (a) adaptive-vs-frozen *guidance* (solver self-improvement), (b) with-vs-without *library*; PRM digest evolution; world-model coverage |
-| `python rsi_core.py --mode demo` | + PRM digest evolution across waves and world-model coverage |
-| `python rsi_core.py --mode test` | all 29 controls incl. the 5 guidance-specific and 6 self-generation-specific ones |
-
----
-
-# Phase D — open-ended self-generated curriculum (does un-designed capability EMERGE?)
-
-Through Phase C every target was **human-given**. Phase D removes that: the system
-**generates its own tasks**, solves them, learns from them, and we measure whether
-capability it was *never told to acquire* emerges — operationalised as: **does a
-system that ran the open-ended self-generated loop solve more human-held-out,
-never-generated tasks than a baseline that did not?**
-
-## The honest bound (stated first, not hidden)
-
-Self-generation does **not** transcend the verifiable domain. A generated task is
-only real because its correctness can be checked, so the generator produces tasks
-whose oracle the **existing sealed machinery** can construct: it synthesises a NEW
-**reference program** in the IR, and that program's input→output behaviour *defines*
-the task's ground truth. "Emergence" here means **capability arising from
-self-directed exploration within the verifiable domain — measured, not magic.** This
-is not a singularity button; it is the only form of open-ended emergence that can be
-made honest.
-
-## The mechanism — self-generated tasks that are self-verifying (`generator.py`)
-
-```
-generate_task():
-    fam   = pick a family from the §6A whitelist
-    ref   = SYNTHESISE A NEW REFERENCE PROGRAM in fam's type signature
-            (mutation/composition over the IR + inlined library blocks)
-    if not complexity_floor(ref): discard                 # L2
-    seal(ref); holdout = { (x, run(ref,x)) for fresh x }  # the self-generated oracle
-    public = a few (x, run(ref,x)) examples               # all the solver sees
-    return Task(fam, public, sealed_ref, sealed_holdout)
-```
-
-The reference is **sealed** (the solver never sees it); the held-out battery is the
-existing `SealedOracle` running that reference on fresh inputs. The solver must
-**rediscover a behaviourally-equivalent program from public examples** and pass the
-sealed battery — a wrong program fails it (`self_verification_is_sound`). References
-are **block-free pure IR** so the oracle runs them standalone; library blocks
-influence generation only via *inlining*, keeping references runnable. The generator
-is **oracle-blind**: it imports `ir`/`interp` only and emits reference programs —
-never reading any other task's sealed reference, any held-out battery, or the
-external set (`generator_is_oracle_blind`).
-
-## The triple lock against toy self-generation (all machine-checked)
-
-Open-endedness makes "retreat to an easy task and self-congratulate" a
-self-amplifying failure. Three locks make it structurally impossible; a task counts
-only if it passes **all three**:
-
-- **L1 — whitelist:** `fam` ∈ §6A, input is **structured** (list of pairs/intervals,
-  a string); any flat-integer-list scalar reduction is rejected at birth
-  (`generated_tasks_pass_floor` asserts **zero** in the whole pool).
-- **L2 — §6B floor:** the reference clears `distinct_ops≥5`, a loop, recursion-or-
-  aux-structure, and `exec_depth≥6` — **computed** from its AST + trace, never
-  asserted.
-- **L3 — self-easiness ban:** valid **only if the current solver, at a LOW probe
-  budget, cannot already solve it.** The easier the minted task, the more certainly
-  it is already-solvable and thrown away — self-congratulation is impossible
-  (`novelty_is_real`, `no_self_congratulation`).
-
-The L3 frontier **ratchets** because the probe (low budget) and the attack (high
-budget) share the **same improving** guidance + library: as they improve, the probe
-rejects more easy tasks (floor rises) while the attack cracks harder ones (ceiling
-rises).
-
-## What actually happened (real run, `--mode openended`, seed 0, 4 generations × batch 5)
-
-```
-gen  minted  locked(triple-lock)  solved-and-verified   lock-fails
-0       5            5                   2               L1=0 L2=0 L3=0
-1       5            4                   2               L1=0 L2=0 L3=1
-2       5            4                   0               L1=0 L2=0 L3=1
-3       5            5                   2               L1=0 L2=0 L3=0
-
-FRONTIER DIFFICULTY TRAJECTORY (§6B metrics of NEWLY-SOLVED tasks/gen)
-  gen 0: solved 2  distinct_ops med=5  exec_depth med=9   groups=[project]
-  gen 1: solved 2  distinct_ops med=6  exec_depth med=20  groups=[project, seqcode]
-  gen 2: no new solves (the registered tasks were too hard for the attack)
-  gen 3: solved 2  distinct_ops med=5  exec_depth med=9   groups=[project]
-archive: 3 filled cells spanning 2 families {project, seqcode}; library: 6 blocks
-total: attacks=18, solved=6;  run digest 1242df7d11318f64 (same seed → identical)
-```
-
-The mechanism works exactly as designed and **stays toy-free**: every registered
-task is on the whitelist, clears the §6B floor, and is structured — **zero
-flat-integer-list tasks** in the entire pool. **L3 begins rejecting** already-solvable
-tasks once the guidance + library improve (gen 1–2), and gen 1 reaches a **depth-20
-seqcode composition** — the frontier *does* ratchet onto harder *instances*. But it
-**oscillates and never breaks into the stateful families**: the generator mints
-`select`/`codec`/`scan` (foldl) tasks that pass the floor and the lock, yet the
-solver portfolio never cracks them, so newly-solved tasks stay inside
-`project`+`seqcode`. This is the §0/§8 honest bound made visible: **the frontier
-cannot reach the stateful families** at this IR/solver's level.
-
-## The emergence measurement (`--mode emergence`, seed 0, equal budget = 18 attacks/arm)
-
-The external held-out set is **8 human-authored tasks** in `tasks.py`
-(`ext_*`), kept out of `SUITE` (so `verifier_fp` is unchanged), never generated and
-never trained on. Both arms train with the **same machinery and the same 18
-attacks** at the same seeds, then evaluate **frozen** on the external set.
-
-```
-EXTERNAL SET (8 sealed tasks)              open-ended arm     fixed-suite baseline
-FULL PORTFOLIO (OE + memetic + PRM-beam)        3                    4
-   open : ext_decode_sortrev, ext_rle_thrice, ext_span_scaled
-   base : + ext_double_width                                   >>> DELTA full = -1
-PRM-BEAM ONLY (isolates the learned guidance)   2                    2
-   both : ext_decode_sortrev, ext_span_scaled                  >>> DELTA beam =  0
-```
-
-### The result, stated plainly: NO emergence (a legitimate, reported finding)
-
-**The emergence delta is ≤ 0.** Self-generation did **not** make the system better at
-unseen human tasks here — on the full portfolio it was **−1** (the baseline solved
-one *more*), and on the guidance-isolating beam it was a flat **0**. Per §8 this is
-reported, not hidden, faked, or tuned away. The mechanism is sound (the controls
-prove it); the *transfer* simply is not there, and the measurements say exactly why:
-
-1. **The generator only reaches re-combinations the suite already teaches.** Within
-   the solver's narrow reachable band (`project`+`seqcode`), the self-generated
-   curriculum re-covers structure the fixed suite *already* contains — so guidance
-   trained on it learns nothing the suite-trained baseline lacks (beam delta = 0,
-   both solve the same two externals).
-2. **The fixed suite is a richer, hand-curated curriculum.** It is larger and spans
-   more `interval`/`project`/`select` shapes than 18 self-generated attacks produce,
-   so its mined **library** (9 blocks vs 6) cracks one extra external (`ext_double_width`)
-   via OE/memetic — hence the full-portfolio delta is **negative**, not zero.
-3. **The frontier never reaches the stateful (`foldl`) families.** The external
-   `scan`/`codec`/`select` tasks stay OPEN for *both* arms, so the hardest externals
-   contribute 0 to either side — there is no headroom for self-generation to win on.
-
-The honest one-line conclusion: **open-ended self-generation works mechanically and
-stays toy-free, but produces no measured capability transfer to unseen tasks here —
-because the self-generated frontier re-covers what the curated suite already teaches
-and cannot break into the stateful families the solver can't reach.** A manufactured
-"singularity" was the one unforgivable failure; this measured ≤0 is the correct
-deliverable.
-
-## Phase D anti-cheat controls (all in `--mode test`, all passing)
-
-| control | what it proves |
-|---|---|
-| `generated_tasks_pass_floor` | every generated task is on the §6A whitelist AND clears §6B; **zero** flat-integer-list scalar reductions in the whole generated pool (the primary anti-toy lock) |
-| `novelty_is_real` (L3) | a planted already-solvable task is **rejected** by L3; a registered task was provably unsolved by the probe at registration |
-| `generator_is_oracle_blind` | source/data-flow: the generator reads no sealed reference, no held-out battery, no external set; it emits reference programs only |
-| `emergence_set_is_sealed` | no generated task is behaviourally identical to an external task (no minting-to-memorise); generation+training never reference the external set |
-| `no_self_congratulation` | progress counts only after L1∧L2∧L3 **and** a solved-and-holdout-verified program; minted-but-trivial and minted-but-unsolved tasks are never counted |
-| `self_verification_is_sound` | a deliberately wrong program FAILS a generated task's sealed battery; an independent rediscovery PASSES it (the self-generated oracle is load-bearing) |
-
-All Phase-A/B/C controls still pass and `verifier_fp` is unchanged
-(`841c6f6277e7c8ef`): **29/29 controls PASS**.
-
-## Phase D audit commands
-
-| command | what it shows |
-|---|---|
-| `python rsi_core.py --mode openended` | per-generation minted→triple-lock→solved, the frontier difficulty trajectory, archive coverage, library, and a reproducible run digest |
-| `python rsi_core.py --mode emergence` | (Phase E) the STRONG invented-capability count with per-credit proofs, the frontier trajectory, AND the weak external-set delta; reproducible digest |
-| `python rsi_core.py --mode test` | all controls incl. the self-generation- and invention-specific ones |
-
----
-
-# Phase E — does the system INVENT capability it was never given? (measured)
-
-Phase D asked "did self-generation transfer to unseen tasks?" and honestly answered
-**no**. Phase E asks the *stronger, truer* question (and measures it): does the
-system **invent a composite capability it was not given as a primitive**, use it
-**load-bearing**, and does that invention **let it reach a family it could not reach
-before**? The Phase-D zero had **two measured causes**, and Phase E removes both.
-
-## Why the previous run was zero — the two blocks
-
-1. **The IR could not express new structure.** Map/filter (and a final-value
-   `foldl`) cannot express a *running accumulator* or a *bounded iteration*, so the
-   self-generated frontier only re-combined map/filter and re-covered what the suite
-   already teaches — it never reached the stateful families.
-2. **The minting was shallow.** Wrapping a solved function's *output* with
-   square/+1 is post-composition: a behaviourally-near variant in the **same**
-   family. Genuine novelty must change the **computational structure**.
-
-## Unlock A — stateful expressiveness (`ir.py`/`interp.py`)
-
-Two stateful higher-order combinators are added (the §6B floor, §6A whitelist,
-sealed oracle and sandbox are **unchanged**, and they are gated so every pre-existing
-policy/beam generates byte-identically):
-
-```
-scan(src, init, body)       running accumulator -> the LIST of every intermediate
-                            acc (the "stateful prefix" shape; e.g. running depths)
-iterate(init, count, body)  bounded while/iterate-until: apply body up to `count`
-                            times (count clamped to MAX_LEN, so it cannot spin)
-```
-
-These are **given building blocks, not the invented capability** — the point is what
-the system *composes* from them. Vertical slice (`--mode solve-hard`): with `scan`, a
-running-maximum-width interval-scan task becomes solvable by the portfolio; it was
-previously OPEN. `bracket_depths` (needs a `'('` literal the solver cannot synthesise)
-and `merge_intervals`/`bytecode_interp` (very deep, task-specific bodies) stay OPEN.
-
-## Unlock B — the invention engine (`library.py`/`generator.py`/`openended.py`)
-
-* **M1 — abstraction-first enumeration.** The OE and memetic solvers enumerate the
-  **newest** learned blocks *before* the base primitives, so a block built on an
-  earlier block is reached as ONE unit and nested structure accumulates instead of
-  being re-derived. (`build_enumeration_order`; OE `grow` is blocks-first; the loop's
-  policy uses a high block-call probability.)
-* **M2 — multi-objective abstraction score** (`score_abstraction`): `compression`
-  (capture × diversity × shortness) + `transfer` (load-bearing across families) +
-  `anti_cheat` (**input-coupled** fraction). A block is admitted only on this score
-  **and** the input-coupled anti-cheat guard (a constant-pushing macro scores 0 and is
-  rejected) **and** a structural non-triviality guard (bare block aliases are rejected).
-* **M3 — non-shallow minting** (`mint_curriculum`): composes the system's OWN
-  verified solutions into tasks that change the **computational structure** —
-  `scanify` (wrap a solved map's body in a scan accumulator), `loop_twice` (a solved
-  scan FOLLOWED BY its reverse: the stateful sub-computation appears *twice*, beyond
-  flat reach until the block exists), `chain`. A shallow `inc`/square post-wrap is
-  kept only so `minting_not_shallow` can assert it is **rejected** (it introduces no
-  accumulator and duplicates no loop). The depth-2 **encapsulation** step then freezes
-  a recurring block-calling pattern (a scan built on the width atom) as a new
-  capability — the stateful analogue of the proven `rle_rev_palindrome_twice` lineage.
-
-## The STRONG emergence definition + measurement (`emergence.py`)
-
-An abstraction `b` is an **EMERGENT CAPABILITY** iff ALL FOUR hold (machine-checked):
-
-1. **composite** — `b` is NOT a single given primitive; its inlined body nests ≥ 2
-   operator applications (`is_composite`);
-2. **load-bearing** — `b` is used in an adopted, holdout-passing solution, and
-   removing it (and every block that transitively calls it) reverts that task to OPEN;
-3. **not given** — `b` was MINED from the system's own solutions, never pre-seeded
-   (the seed library is empty; the credited set is disjoint from the given primitives);
-4. **enables reach** — with `b` the portfolio solves a task it does NOT solve with
-   primitives + non-`b` blocks at equal budget (ideally in a harder, stateful family).
-
-(2)+(4) are one counterfactual: attack each reach target once with the full library;
-the load-bearing block is among those its solution calls, so removal is tested only
-for those — and `b` is credited only if the target is solved WITH it and OPEN WITHOUT
-it. Both arms use the same deterministic memetic+OE probe at the **same budget**, so
-a credit is a real, holdout-verified reach gain, not a budget artefact.
-
-## The measured result (`--mode emergence`, seed 0)
-
-```
->>> INVENTED-CAPABILITY COUNT = 2 <<<        (the headline; reproducible digest)
-
-CAPABILITY B5 = scan($0, 0, imax(B0(it), acc))           # running maximum width
-  composite : inlined nests 5 operator nodes -> scan($0,0,imax(sub(snd,fst),acc))
-  not-given : origin=encapsulated, built on B0=width; mined from the system's OWN
-              solutions (seed library empty)
-  load-bear : used B5 in the solution; removing B5 reverts the task to OPEN
-  reach     : solved 'mint_0_loop_twice' [scan / HARDER] as
-              ldrop(lapp(cons('', B5(a0)), lrev(B5(a0))), B14(a0))
-
-CAPABILITY B11 = scan($0, 2, mul(snd(it), B0(it)))       # a running-max composite
-  composite : inlined nests 6 operator nodes
-  not-given : origin=encapsulated, built on B0=width
-  load-bear : used B11; removing it reverts the task to OPEN
-  reach     : solved 'mint_5_loop_twice' [scan / HARDER] as
-              lrev(lrev(B11(lapp(a0, lrev(a0)))))
-
-FRONTIER TRAJECTORY (do the deep families enter reach?):
-  bracket_depths  : still OPEN     merge_intervals : still OPEN
-  bytecode_interp : still OPEN
-
-(weak, retained) EXTERNAL-TRANSFER DELTA on the 8 SEALED human tasks: full = 0,
-  beam = 0 — both arms now solve ext_running_max_width (the scan primitive lifted
-  it into reach for BOTH), so self-generation shows no *net* transfer advantage.
-```
-
-The headline is the **strong** count. Two genuine **scan** capabilities are invented
-from the system's own solutions — neither is a given primitive, each is built on an
-earlier mined atom (`width`), each is load-bearing, and each unlocks a deep
-`loop_twice` task in the stateful family that the portfolio cannot reach with
-primitives + the other blocks at equal budget. This is **un-designed composite
-capability that unlocks new reach, measured** — not a manufactured singularity.
-
-## The honest bound (§0) and the honest wall
-
-Invention is still **bounded by the verifiable domain**: a task is real only because
-its sealed reference defines a checkable ground truth. Emergence here = an un-designed
-composite capability arising *within* that domain, measured. The wall is reported, not
-hidden: the three deepest suite families stay OPEN — `bracket_depths` needs a `'('`
-literal the solver cannot synthesise, and `merge_intervals`/`bytecode_interp` need
-deep, task-specific accumulator bodies (`llast`/`linit` interval merging; a PUSH/ADD/
-MUL stack step) that the invented scan abstractions do not compose into. The invented
-folds help **within the interval/scan domain that birthed them**; they do not break
-into the parsing / state-machine families. With stateful expressiveness and an
-invention engine the system composes reusable, reach-unlocking abstractions — but only
-within reach of its own solutions, and that boundary is exactly where it stalls.
-
-## Phase E anti-cheat controls (all in `--mode test`, all passing)
-
-| control | what it proves |
-|---|---|
-| `invented_is_genuinely_composite` | every credited `b` is irreducible to one primitive; a planted block equal to one primitive is NOT credited; `measure_strong` gates on `is_composite` |
-| `invented_is_not_given` | a planted PRE-SEEDED block is never eligible for credit; the given-vocabulary is disjoint from the mined-block names; the seed library is empty |
-| `minting_not_shallow` | every minted task changes computational structure (introduces an accumulator OR duplicates a stateful loop) AND is behaviourally distant from its source; the triple lock holds; ZERO flat-integer-list tasks; the shallow `inc` post-wrap is correctly rejected |
-| `abstraction_anti_trivial` | a planted constant-pushing macro scores 0 on `anti_cheat` and is rejected by library admission (compression-gaming blocked) |
-| `reach_unlock_is_load_bearing` | for the proven scan-twice scenario, WITH the inner-scan block the portfolio solves it and WITHOUT it (library minus the block + dependents) the task is OPEN |
-
-All Phase-A/B/C/D controls still pass and `verifier_fp` is unchanged
-(`841c6f6277e7c8ef`): **34/34 controls PASS** at Phase E (29 prior + 5
-invention-specific). Phase F adds 5 more → **39/39**; see the Phase F section.
-
-## Phase E audit commands
-
-| command | what it shows |
-|---|---|
-| `python rsi_core.py --mode emergence` | the strong invented-capability count with composite + load-bearing + reach-unlock proofs per credit; the frontier trajectory; the weak external-set delta; reproducible digests |
-| `python rsi_core.py --mode solve-hard` | the full portfolio on the suite + the interval-scan family; which stateful shapes enter reach and which stay OPEN |
-| `python rsi_core.py --mode test` | every control, incl. the 5 invention-specific ones above |
-
-
----
-
-# Phase F — reverse-engineered emergence: backward-decompose the hard targets, measure STRICT cross-domain emergence
-
-Five prior phases established, by measurement, a single wall: every invented
-abstraction stayed inside its **birth pattern** (scan→scan, running-max→running-max),
-and the genuinely hard families (`bytecode_interp`, `merge_intervals`,
-`bracket_depths`) were never solved at all — so cross-family transfer across
-*structurally different* problems could not even be tested. Phase F does two things
-together: (1) make a hard family **solvable** (so emergence has something real to act
-on), and (2) search for whether **real cross-domain emergence** is achievable, using a
-new engine — **reverse-engineering / backward decomposition** — under a definition
-strict enough that the previous "demo-engineering" is *structurally impossible*.
-
-This is an honest **experiment**, not a promise. A measured "no emergence, and here is
-exactly the dependency gap that blocks it" is a first-class result — and, given five
-prior negatives, the likely one. Nothing here manufactures a positive.
-
-## The honest scope bound (stated first)
-
-"All domains" means **all domains whose correctness is checkable**. The mechanism is
-domain-general — it operates over the general typed IR and the task space, not
-hardcoded families — and the verifier stays as general as the §6B/oracle machinery
-allows. But capabilities with no cheap verifier (e.g. "a better cognitive
-architecture") remain out of reach **by construction, for everyone**. Emergence here
-means an un-designed composite capability arising *within the verifiable domain*,
-measured — not a singularity. A target is "real" only because its sealed reference
-defines a checkable ground truth.
-
-## Unlock A — the IR gains a two-stage `pipe`
-
-`scan` / `iterate` (stateful prefix + bounded while) were added in Phase E. Phase F
-completes the set with **`pipe(f, g)`** — two-stage composition `g∘f`: evaluate stage
-`f` over the inputs, then evaluate stage `g` with `arg(0)` rebound to `f`'s result.
-This is the structural unit a backward decomposition emits when it splits a target
-into two in-reach sub-functions and composes them. `pipe` is a *given* building block;
-what matters is what the system **decomposes into**. §6B / §6A / the sealed oracle /
-the sandbox are unchanged, and `verifier_fp` is unchanged (`841c6f6277e7c8ef`) — no
-reference uses `pipe`.
-
-## Unlock B — the backward-decomposition engine (`decompose.py`)
-
-When the forward portfolio (OE + memetic + PRM-beam) stalls, the solver works
-**backward**: it hypothesises a **skeleton with a typed hole**, derives the hole's
-input/output examples from the target's PUBLIC examples + the skeleton's shape, solves
-the small sub-piece, fills the skeleton, and accepts only if the composite passes the
-full public train **and** the sealed holdout. The skeletons (named in the task):
-
-| skeleton | scaffold | hole I/O derived from public data by … |
-|---|---|---|
-| `scan_step` | `pipe(map(SRC, STEP(it)), scan(·,0,add(acc,it)))` | per-step delta = **first-difference** of the running-accumulator output |
-| `map_step` | `map(SRC, STEP(it))` | the per-element `(elem, out_elem)` pairs |
-| `filter_step` | `filter(arg0, PRED(it))` | `keep(elem) = elem ∈ output` (subsequence) |
-| `preprocess` / `g∘f` | `pipe(f, g)` for f ∈ {lsort, lrev, lsort∘lrev} | intermediate = `f(public_input)` (split-process-merge) |
-| `map_fold` | `foldl(arg0, init, reducer)` | a fixed reducer over an int list |
-
-**Anti-leakage (critical).** `propose_intermediate_io` reads only the target's PUBLIC
-examples and the skeleton's shape; it never reads the sealed reference or held-out
-battery. `decompose.py` imports neither the oracle nor the task module and receives the
-holdout only as an opaque `verify` **callback** used for the final gate. Decomposition
-is a *search strategy*, not a hint pipe — proved by the `decomposition_no_leakage`
-control (source + data-flow). It is wired as the **4th portfolio channel**, invoked
-only when the first three stall.
-
-## What decomposition cracked — `--mode solve-hard` (real output)
-
-```
-HARD-FAMILY LEDGER (the objective). Every SOLVED row is sealed-holdout
-verified above; OPEN rows are reported, never hidden.
-    bracket_depths     scan (running bracket depth)   : SOLVED by DECOMPOSITION
-    merge_intervals    interval sort+state-merge      : OPEN
-    bytecode_interp    stack-machine interpreter      : OPEN
-------------------------------------------------------------------------------
-DECOMPOSITION STRUCTURE (sub-functions discovered while cracking a
-hard family; these are the candidate abstractions for §3 emergence):
-    bracket_depths: pipe(map(schars(a0), ifx(eqv('(', it), slen('('), -1)), scan(a0, 0, ...
-        sub-fn Dstep1 (decomposed) : ifx(eqv('(', $0), slen('('), -1)
-        sub-fn Dscan1 (decomposed) : scan($0, 0, add(acc, it))
-```
-
-`bracket_depths` — previously OPEN to all five phases — is now **SOLVED by
-decomposition**: the `scan_step` skeleton splits it into a `'('`-classifier (`Dstep1`)
-whose I/O is the first-differences of the running-depth output, and a running-sum scan
-(`Dscan1`). The composite is sealed-holdout verified. The other two hard families stay
-OPEN, each with a **located dependency gap** (not waved away):
-
-- `merge_intervals` decomposes into **sort** (isolated and solved as `lsort`) *then* a
-  sequential overlap-merge fold — but the merge fold's intermediate accumulator is not
-  recoverable from public I/O, so that stage stays a full deep fold beyond reach. The
-  sort is solved; the **merge is the gap**.
-- `bytecode_interp`'s output is a single scalar (top of the final stack); the fold's
-  intermediate **stack states are not observable** from public I/O, so the
-  dispatch/execute step cannot be isolated into a solvable hole.
-
-## The strict emergence definition (§3) — so demo-engineering is impossible
-
-An abstraction `b` is **EMERGENT** iff ALL hold: (1) **composite** — not reducible to a
-single given IR primitive; (2) **mined, not given** — discovered by the system,
-disjoint from the seeded primitive/combinator vocabulary; (3) **cross-domain reach** —
-with `b` the portfolio solves a target in a **DIFFERENT structural group** that was
-**previously OPEN** (unsolvable without `b` at equal budget); (4) **load-bearing** —
-removing `b` reverts that target to OPEN at equal budget. Same-group "reach"
-(scan→scan) is **explicitly disallowed** by (3) — which is exactly what makes Phase E's
-running-max→running-max+1 unlock *uncreditable*. The `emergence_groups` are genuine
-structural shapes — `{seqcode, codec, interval, select, project, scan, parse, merge}` —
-fixed and shape-based, asserted not gerrymandered.
-
-## The measured result — `--mode emergence` / `--mode transfer-matrix` (real output)
-
-```
-BIDIRECTIONAL TRANSFER MATRIX -- is each abstraction LOAD-BEARING on a
-previously-OPEN target in each structural group? (LB = yes; -- = no).
-  abstr \ group | codec     interval  merge     parse     project   scan      select    seqcode
-  Dstep1        | --        --        --        --        --        LB        --        --        [LOCAL, birth=scan]
-  Dscan1        | --        --        --        --        --        --        --        --        [LOCAL, birth=scan]
-  Dpre_sortrev1 | --        --        --        --        --        --        --        --        [LOCAL, birth=seqcode]
-------------------------------------------------------------------------------
-  abstractions discovered : 3
-  LOCAL  (load-bearing only in birth group, or nowhere) : 3
-  GENERAL (load-bearing in a DIFFERENT group)           : 0
-  >>> STRICT CROSS-GROUP EMERGENCE COUNT = 0 <<<
-```
-
-### The finding, stated plainly: NO cross-domain emergence (a legitimate, located result, §8)
-
-Backward decomposition genuinely **cracked** a previously-OPEN hard family, and the
-three discovered sub-functions are composite and mined — but **every one stays LOCAL to
-its birth group**:
-
-- `Dstep1` (the `'('`-classifier) is load-bearing only on `bracket_depths` itself —
-  bracket-specific, it transfers nowhere.
-- `Dscan1` (the running-sum scan) is composite and general *in principle*, but
-  load-bearing on **no previously-OPEN target**: every target a prefix-sum scan fits is
-  already flat-solvable, so it never unlocks anything.
-- `Dpre_sortrev1` (the decode stage of a sort-reverse-decode pipe) is seqcode-specific.
-
-The **bridge** that real cross-domain emergence would require — an abstraction that one
-group forces into existence *and* a structurally-different, previously-OPEN group then
-**requires** — does not arise in the verifiable suite. The same-group plant control
-confirms the credit path *can* fire, so this 0 is a **measured negative, not a dead
-detector**. With stateful expressiveness **and** a reverse-engineering engine, real
-cross-domain recursive self-improvement **does not emerge here**, and the absent bridge
-is located exactly. Honest emergence-or-not, with the gap pinpointed, beats any
-manufactured "singularity" — and is the rarer result.
-
-Both modes emit the reproducible digest `2d84f7e039e7ca8d` (same seed → byte-identical).
-
-## Phase F anti-cheat controls (all in `--mode test`, all passing)
-
-| control | what it proves |
-|---|---|
-| `decomposition_no_leakage` | `decompose.py` imports no oracle/tasks module and names no sealed reference / held-out battery / example generator; its only oracle-derived input is an opaque `verify` callback; functionally it cracks `bracket_depths` and the SEALED oracle (not the engine) verifies the winner |
-| `emergent_is_cross_group_and_was_open` | a planted block that is genuinely load-bearing on a previously-OPEN target **in its own birth group** is NOT credited (the transfer cell still records the load-bearing fact); the credit gate requires `group ≠ birth_group` |
-| `groups_not_gerrymandered` | the grouping is fixed and shape-based; behaviourally-near tasks share a group; behaviourally-distinct shapes are in different groups; it is not a one-task-per-group catch-all (7 groups over 32 tasks) |
-| `emergent_is_composite_and_mined` | a single-primitive block is not composite; a seed-origin block is not mined; only a genuine decomposed composite passes both; `measure_strict` gates credit on both predicates |
-| `hard_family_solutions_are_holdout_verified` | any hard family reported SOLVED passes its SEALED held-out battery; a wrong solver program FAILS it; the engine's final gate is the `verify` callback |
-
-All Phase-A/B/C/D/E controls still pass and `verifier_fp` is unchanged
-(`841c6f6277e7c8ef`): **39/39 controls PASS** (34 prior + 5 Phase-F).
-
-## Phase F audit commands
-
-| command | what it shows |
-|---|---|
-| `python rsi_core.py --mode solve-hard` | the hard-family ledger: which previously-OPEN families are now solved (forward vs decomposition vs still-OPEN), all SOLVED ones holdout-verified, with the discovered sub-functions |
-| `python rsi_core.py --mode emergence` | the strict cross-group invented-capability count (§3) with per-credit proofs OR the dependency-gap analysis when 0; the transfer matrix; reproducible digest |
-| `python rsi_core.py --mode transfer-matrix` | the bidirectional abstraction × structural-group matrix — general vs local, the quantitative heart of the finding |
-| `python rsi_core.py --mode test` | every control, including the 5 Phase-F reverse-engineering / strict-emergence controls above |
-
-## What Phase F adds, in one line
-
-With a two-stage `pipe` and a backward-decomposition engine, the system **cracks a
-previously-unsolvable hard family by reverse-engineering it** — and the strict,
-cross-group, previously-OPEN, load-bearing measurement reports **real cross-domain
-emergence = 0**, with the discovered abstractions provably local and the absent bridge
-located exactly. The honest negative is the deliverable.
