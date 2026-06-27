@@ -17,10 +17,11 @@ by 2–5 instructions of a stack VM whose opcodes were already high-level
 reductions). The toy domain is deleted. What survives is the one genuinely
 verification-grounded discipline of that monolith's native-kernel section:
 *build the verifier first, datafy the candidate, verify bit-exact, measure
-against a frozen counterfactual.* This system is **~5,400 logical lines**
-(~6,900 physical incl. comments) across Phases A–D — roughly a tenth of the
-deleted monolith, and the Phase-D self-generation layer (`generator.py` +
-`openended.py`) is ~735 of them: a small fraction, not a balloon.
+against a frozen counterfactual.* This system is **~9,300 physical lines incl.
+comments** across Phases A–F — roughly a fifth of the deleted monolith. The
+Phase-F reverse-engineering layer (`decompose.py` + `reverse_emergence.py`) is
+~910 of them: the backward-decomposition solver channel and the strict
+cross-group emergence measurement — a small multiple, not a balloon.
 
 ---
 
@@ -29,33 +30,53 @@ deleted monolith, and the Phase-D self-generation layer (`generator.py` +
 From a fixed seeded run on this machine:
 
 ```
---mode test            : 34/34 anti-cheat controls PASS; verifier_fp unchanged
+--mode test            : 39/39 anti-cheat controls PASS; verifier_fp unchanged
+--mode solve-hard      : full portfolio + the 4th channel, backward DECOMPOSITION
+                         (Unlock B). bracket_depths -- a previously-OPEN hard family
+                         -- is now SOLVED by decomposition (scan_step skeleton),
+                         sealed-holdout verified. merge_intervals / bytecode_interp
+                         stay OPEN, each with a located dependency gap
+--mode emergence       : (Phase F) the STRICT cross-domain count (§3) -- composite
+                         + mined + CROSS-GROUP + previously-OPEN + load-bearing.
+                         >>> STRICT CROSS-GROUP EMERGENCE COUNT = 0 <<<  Backward
+                         decomposition CRACKS a hard family and mines 3 composite
+                         abstractions, but every one stays LOCAL to its birth group.
+                         The exact absent bridge is located (not waved away)
+--mode transfer-matrix : the bidirectional abstraction x structural-group matrix --
+                         3 discovered abstractions, all LOCAL, 0 general. The
+                         quantitative heart of the honest finding
 --mode counterfactual  : TWO measured deltas, equal budget/seeds --
-   (a) LEARNED GUIDANCE (Phase C, solver self-improvement):
-       frozen-guidance solves 0; adaptive-guidance (trained PRM + world model)
-       solves 5  ->  DELTA (a) = +5   (3 of the 5 are UNSEEN tasks)
-   (b) MACRO LIBRARY (Phase A/B): frozen solves 4, adaptive solves 7
-       ->  DELTA (b) = +3
---mode solve-hard      : full portfolio on the suite + the interval-scan family;
-                         the scan stateful shape now enters reach (Unlock A);
-                         bytecode_interp/merge_intervals/bracket_depths stay OPEN,
-                         reported with best-partial
+   (a) LEARNED GUIDANCE (Phase C): frozen 0 vs adaptive 5  ->  DELTA (a) = +5
+   (b) MACRO LIBRARY (Phase A/B): frozen 4 vs adaptive 7  ->  DELTA (b) = +3
 --mode openended       : the system invents its OWN tasks (a fresh sealed
                          reference defines each), keeps only those passing the
                          TRIPLE LOCK, solves what it can, trains on its OWN solves
---mode emergence       : (Phase E) the STRONG headline -- INVENTED-CAPABILITY
-                         COUNT = 2: two genuine scan abstractions (running-max-
-                         width and a running-max composite) are invented from the
-                         system's OWN solutions, used load-bearing, and each
-                         UNLOCKS a deep stateful task primitives + non-b blocks
-                         cannot reach at equal budget. bracket_depths/merge/
-                         bytecode stay OPEN (the honest wall). The (weak) external-
-                         transfer delta is 0 -- reported, not inflated
 --mode demo            : complexity table; solved/OPEN lists; library lineage;
                          PRM digest evolution + world-model coverage
 ```
 
-**Phase E** (latest) asks a stronger, truer question than Phase D's transfer delta:
+**Phase F** (latest) reverse-engineers the hard targets and tests emergence under a
+**stricter** definition that makes Phase E's demonstration explicitly *uncreditable*.
+Two new pieces: (A) **Unlock A** completes the IR with a two-stage `pipe` (compose
+`g∘f`) primitive; (B) **Unlock B** is a **backward-decomposition** solver channel —
+when the forward portfolio stalls it hypothesises a structural decomposition of the
+target into sub-functions individually in reach, solves the sub-pieces from PUBLIC
+examples, and composes them (exactly how a human writes an interpreter: tokenise →
+classify → run). This **cracks `bracket_depths`** — a previously-OPEN hard family —
+by splitting it into a `'('`-classifier and a running-sum scan (sealed-holdout
+verified). The discovered sub-functions are the candidates for the **strict §3
+emergence** test: an abstraction counts only if it is composite, mined (not given),
+**load-bearing on a previously-OPEN target in a DIFFERENT structural group**, and
+removal reverts that target to OPEN. Same-group reach (scan→scan — exactly Phase E's
+credited unlock) is **disallowed**. The measured headline is **STRICT CROSS-GROUP
+EMERGENCE COUNT = 0**: decomposition discovers three genuine composite abstractions,
+but the bidirectional transfer matrix shows every one is **LOCAL** to its birth
+group. `merge_intervals`/`bytecode_interp` stay OPEN — their decisive step is a fold
+whose intermediate state is *not observable from public I/O*, so no sub-piece can be
+isolated. This is a sixth measured negative, with the absent bridge located exactly;
+the full mechanism and proofs are in the **Phase F** section below.
+
+**Phase E** asks a stronger, truer question than Phase D's transfer delta:
 does the system **invent a composite capability it was never given as a primitive**,
 use it **load-bearing**, and does that invention **let it reach a family it could
 not reach before**? Two blocks caused Phase D's zero, and Phase E removes both:
@@ -97,26 +118,34 @@ the verify procedure source; the run aborts if it changes).
 ## Architecture (modules)
 
 ```
-rsi_core.py        thin CLI entry point (--mode demo | counterfactual | test)
+rsi_core.py        thin CLI entry point (--mode demo | solve-hard | emergence |
+                   transfer-matrix | counterfactual | openended | test | ...)
 vcrsi/
   ir.py            typed IR: programs as data; library blocks; inlining; pp.
-                   Stateful combinators map/filter/foldl + (Phase E) scan/iterate
+                   Stateful combinators map/filter/foldl + scan/iterate + (Phase F)
+                   the two-stage `pipe` (compose g∘f) -- Unlock A
   interp.py        resource-budgeted, side-effect-free executor (physical root)
   tasks.py         the §6A-whitelist task suite + reference solutions (in the IR)
   oracle.py        the sealed, hash-pinned correctness oracle (verifier root)
   complexity.py    the machine-checked complexity floor (§6B)
-  search.py        the LLM-free synthesizer (sampling + memetic local search)
+  search.py        the LLM-free synthesizer (sampling + memetic local search);
+                   Policy.example_lits harvests public-input literals (Phase F)
   search_oe.py     bottom-up observational-equivalence synthesizer (abstraction-first)
+  decompose.py     (Phase F / Unlock B) the BACKWARD-DECOMPOSITION solver channel:
+                   skeleton + typed-hole filling; public-only propose_intermediate_io
   library.py       the evolvable policy genome (weights + mined/encapsulated blocks);
                    M2 multi-objective abstraction score + composite/anti-cheat predicates
   generator.py     ORACLE-BLIND self-generation + (Phase E) M3 non-shallow minting
   openended.py     the open-ended loop (triple lock, skill-build, encapsulation)
-  emergence.py     (Phase E) the STRONG invented-capability measurement (§3)
+  emergence.py     (Phase E) the STRONG invented-capability measurement (§3) +
+                   the equal-budget reach_unlock counterfactual (reused by Phase F)
+  reverse_emergence.py  (Phase F) the STRICT cross-group emergence count + the
+                   bidirectional transfer matrix over decomposition-mined abstractions
   rsi.py           the RSI loop: weight learning, META-GATE, encapsulation, lineage
   counterfactual.py  adaptive vs frozen arms at equal budget/seeds
-  controls.py      the anti-cheat controls (§4/§5) as runnable checks
-  report.py        --mode demo / counterfactual / solve-hard / openended /
-                   emergence / test drivers
+  controls.py      the anti-cheat controls (§4/§5) as runnable checks (39)
+  report.py        --mode demo / solve-hard / emergence / transfer-matrix /
+                   counterfactual / openended / test drivers
 ```
 
 ---
@@ -832,7 +861,8 @@ within reach of its own solutions, and that boundary is exactly where it stalls.
 | `reach_unlock_is_load_bearing` | for the proven scan-twice scenario, WITH the inner-scan block the portfolio solves it and WITHOUT it (library minus the block + dependents) the task is OPEN |
 
 All Phase-A/B/C/D controls still pass and `verifier_fp` is unchanged
-(`841c6f6277e7c8ef`): **34/34 controls PASS** (29 prior + 5 invention-specific).
+(`841c6f6277e7c8ef`): **34/34 controls PASS** at Phase E (29 prior + 5
+invention-specific). Phase F adds 5 more → **39/39**; see the Phase F section.
 
 ## Phase E audit commands
 
@@ -842,3 +872,180 @@ All Phase-A/B/C/D controls still pass and `verifier_fp` is unchanged
 | `python rsi_core.py --mode solve-hard` | the full portfolio on the suite + the interval-scan family; which stateful shapes enter reach and which stay OPEN |
 | `python rsi_core.py --mode test` | every control, incl. the 5 invention-specific ones above |
 
+
+---
+
+# Phase F — reverse-engineered emergence: backward-decompose the hard targets, measure STRICT cross-domain emergence
+
+Five prior phases established, by measurement, a single wall: every invented
+abstraction stayed inside its **birth pattern** (scan→scan, running-max→running-max),
+and the genuinely hard families (`bytecode_interp`, `merge_intervals`,
+`bracket_depths`) were never solved at all — so cross-family transfer across
+*structurally different* problems could not even be tested. Phase F does two things
+together: (1) make a hard family **solvable** (so emergence has something real to act
+on), and (2) search for whether **real cross-domain emergence** is achievable, using a
+new engine — **reverse-engineering / backward decomposition** — under a definition
+strict enough that the previous "demo-engineering" is *structurally impossible*.
+
+This is an honest **experiment**, not a promise. A measured "no emergence, and here is
+exactly the dependency gap that blocks it" is a first-class result — and, given five
+prior negatives, the likely one. Nothing here manufactures a positive.
+
+## The honest scope bound (stated first)
+
+"All domains" means **all domains whose correctness is checkable**. The mechanism is
+domain-general — it operates over the general typed IR and the task space, not
+hardcoded families — and the verifier stays as general as the §6B/oracle machinery
+allows. But capabilities with no cheap verifier (e.g. "a better cognitive
+architecture") remain out of reach **by construction, for everyone**. Emergence here
+means an un-designed composite capability arising *within the verifiable domain*,
+measured — not a singularity. A target is "real" only because its sealed reference
+defines a checkable ground truth.
+
+## Unlock A — the IR gains a two-stage `pipe`
+
+`scan` / `iterate` (stateful prefix + bounded while) were added in Phase E. Phase F
+completes the set with **`pipe(f, g)`** — two-stage composition `g∘f`: evaluate stage
+`f` over the inputs, then evaluate stage `g` with `arg(0)` rebound to `f`'s result.
+This is the structural unit a backward decomposition emits when it splits a target
+into two in-reach sub-functions and composes them. `pipe` is a *given* building block;
+what matters is what the system **decomposes into**. §6B / §6A / the sealed oracle /
+the sandbox are unchanged, and `verifier_fp` is unchanged (`841c6f6277e7c8ef`) — no
+reference uses `pipe`.
+
+## Unlock B — the backward-decomposition engine (`decompose.py`)
+
+When the forward portfolio (OE + memetic + PRM-beam) stalls, the solver works
+**backward**: it hypothesises a **skeleton with a typed hole**, derives the hole's
+input/output examples from the target's PUBLIC examples + the skeleton's shape, solves
+the small sub-piece, fills the skeleton, and accepts only if the composite passes the
+full public train **and** the sealed holdout. The skeletons (named in the task):
+
+| skeleton | scaffold | hole I/O derived from public data by … |
+|---|---|---|
+| `scan_step` | `pipe(map(SRC, STEP(it)), scan(·,0,add(acc,it)))` | per-step delta = **first-difference** of the running-accumulator output |
+| `map_step` | `map(SRC, STEP(it))` | the per-element `(elem, out_elem)` pairs |
+| `filter_step` | `filter(arg0, PRED(it))` | `keep(elem) = elem ∈ output` (subsequence) |
+| `preprocess` / `g∘f` | `pipe(f, g)` for f ∈ {lsort, lrev, lsort∘lrev} | intermediate = `f(public_input)` (split-process-merge) |
+| `map_fold` | `foldl(arg0, init, reducer)` | a fixed reducer over an int list |
+
+**Anti-leakage (critical).** `propose_intermediate_io` reads only the target's PUBLIC
+examples and the skeleton's shape; it never reads the sealed reference or held-out
+battery. `decompose.py` imports neither the oracle nor the task module and receives the
+holdout only as an opaque `verify` **callback** used for the final gate. Decomposition
+is a *search strategy*, not a hint pipe — proved by the `decomposition_no_leakage`
+control (source + data-flow). It is wired as the **4th portfolio channel**, invoked
+only when the first three stall.
+
+## What decomposition cracked — `--mode solve-hard` (real output)
+
+```
+HARD-FAMILY LEDGER (the objective). Every SOLVED row is sealed-holdout
+verified above; OPEN rows are reported, never hidden.
+    bracket_depths     scan (running bracket depth)   : SOLVED by DECOMPOSITION
+    merge_intervals    interval sort+state-merge      : OPEN
+    bytecode_interp    stack-machine interpreter      : OPEN
+------------------------------------------------------------------------------
+DECOMPOSITION STRUCTURE (sub-functions discovered while cracking a
+hard family; these are the candidate abstractions for §3 emergence):
+    bracket_depths: pipe(map(schars(a0), ifx(eqv('(', it), slen('('), -1)), scan(a0, 0, ...
+        sub-fn Dstep1 (decomposed) : ifx(eqv('(', $0), slen('('), -1)
+        sub-fn Dscan1 (decomposed) : scan($0, 0, add(acc, it))
+```
+
+`bracket_depths` — previously OPEN to all five phases — is now **SOLVED by
+decomposition**: the `scan_step` skeleton splits it into a `'('`-classifier (`Dstep1`)
+whose I/O is the first-differences of the running-depth output, and a running-sum scan
+(`Dscan1`). The composite is sealed-holdout verified. The other two hard families stay
+OPEN, each with a **located dependency gap** (not waved away):
+
+- `merge_intervals` decomposes into **sort** (isolated and solved as `lsort`) *then* a
+  sequential overlap-merge fold — but the merge fold's intermediate accumulator is not
+  recoverable from public I/O, so that stage stays a full deep fold beyond reach. The
+  sort is solved; the **merge is the gap**.
+- `bytecode_interp`'s output is a single scalar (top of the final stack); the fold's
+  intermediate **stack states are not observable** from public I/O, so the
+  dispatch/execute step cannot be isolated into a solvable hole.
+
+## The strict emergence definition (§3) — so demo-engineering is impossible
+
+An abstraction `b` is **EMERGENT** iff ALL hold: (1) **composite** — not reducible to a
+single given IR primitive; (2) **mined, not given** — discovered by the system,
+disjoint from the seeded primitive/combinator vocabulary; (3) **cross-domain reach** —
+with `b` the portfolio solves a target in a **DIFFERENT structural group** that was
+**previously OPEN** (unsolvable without `b` at equal budget); (4) **load-bearing** —
+removing `b` reverts that target to OPEN at equal budget. Same-group "reach"
+(scan→scan) is **explicitly disallowed** by (3) — which is exactly what makes Phase E's
+running-max→running-max+1 unlock *uncreditable*. The `emergence_groups` are genuine
+structural shapes — `{seqcode, codec, interval, select, project, scan, parse, merge}` —
+fixed and shape-based, asserted not gerrymandered.
+
+## The measured result — `--mode emergence` / `--mode transfer-matrix` (real output)
+
+```
+BIDIRECTIONAL TRANSFER MATRIX -- is each abstraction LOAD-BEARING on a
+previously-OPEN target in each structural group? (LB = yes; -- = no).
+  abstr \ group | codec     interval  merge     parse     project   scan      select    seqcode
+  Dstep1        | --        --        --        --        --        LB        --        --        [LOCAL, birth=scan]
+  Dscan1        | --        --        --        --        --        --        --        --        [LOCAL, birth=scan]
+  Dpre_sortrev1 | --        --        --        --        --        --        --        --        [LOCAL, birth=seqcode]
+------------------------------------------------------------------------------
+  abstractions discovered : 3
+  LOCAL  (load-bearing only in birth group, or nowhere) : 3
+  GENERAL (load-bearing in a DIFFERENT group)           : 0
+  >>> STRICT CROSS-GROUP EMERGENCE COUNT = 0 <<<
+```
+
+### The finding, stated plainly: NO cross-domain emergence (a legitimate, located result, §8)
+
+Backward decomposition genuinely **cracked** a previously-OPEN hard family, and the
+three discovered sub-functions are composite and mined — but **every one stays LOCAL to
+its birth group**:
+
+- `Dstep1` (the `'('`-classifier) is load-bearing only on `bracket_depths` itself —
+  bracket-specific, it transfers nowhere.
+- `Dscan1` (the running-sum scan) is composite and general *in principle*, but
+  load-bearing on **no previously-OPEN target**: every target a prefix-sum scan fits is
+  already flat-solvable, so it never unlocks anything.
+- `Dpre_sortrev1` (the decode stage of a sort-reverse-decode pipe) is seqcode-specific.
+
+The **bridge** that real cross-domain emergence would require — an abstraction that one
+group forces into existence *and* a structurally-different, previously-OPEN group then
+**requires** — does not arise in the verifiable suite. The same-group plant control
+confirms the credit path *can* fire, so this 0 is a **measured negative, not a dead
+detector**. With stateful expressiveness **and** a reverse-engineering engine, real
+cross-domain recursive self-improvement **does not emerge here**, and the absent bridge
+is located exactly. Honest emergence-or-not, with the gap pinpointed, beats any
+manufactured "singularity" — and is the rarer result.
+
+Both modes emit the reproducible digest `2d84f7e039e7ca8d` (same seed → byte-identical).
+
+## Phase F anti-cheat controls (all in `--mode test`, all passing)
+
+| control | what it proves |
+|---|---|
+| `decomposition_no_leakage` | `decompose.py` imports no oracle/tasks module and names no sealed reference / held-out battery / example generator; its only oracle-derived input is an opaque `verify` callback; functionally it cracks `bracket_depths` and the SEALED oracle (not the engine) verifies the winner |
+| `emergent_is_cross_group_and_was_open` | a planted block that is genuinely load-bearing on a previously-OPEN target **in its own birth group** is NOT credited (the transfer cell still records the load-bearing fact); the credit gate requires `group ≠ birth_group` |
+| `groups_not_gerrymandered` | the grouping is fixed and shape-based; behaviourally-near tasks share a group; behaviourally-distinct shapes are in different groups; it is not a one-task-per-group catch-all (7 groups over 32 tasks) |
+| `emergent_is_composite_and_mined` | a single-primitive block is not composite; a seed-origin block is not mined; only a genuine decomposed composite passes both; `measure_strict` gates credit on both predicates |
+| `hard_family_solutions_are_holdout_verified` | any hard family reported SOLVED passes its SEALED held-out battery; a wrong solver program FAILS it; the engine's final gate is the `verify` callback |
+
+All Phase-A/B/C/D/E controls still pass and `verifier_fp` is unchanged
+(`841c6f6277e7c8ef`): **39/39 controls PASS** (34 prior + 5 Phase-F).
+
+## Phase F audit commands
+
+| command | what it shows |
+|---|---|
+| `python rsi_core.py --mode solve-hard` | the hard-family ledger: which previously-OPEN families are now solved (forward vs decomposition vs still-OPEN), all SOLVED ones holdout-verified, with the discovered sub-functions |
+| `python rsi_core.py --mode emergence` | the strict cross-group invented-capability count (§3) with per-credit proofs OR the dependency-gap analysis when 0; the transfer matrix; reproducible digest |
+| `python rsi_core.py --mode transfer-matrix` | the bidirectional abstraction × structural-group matrix — general vs local, the quantitative heart of the finding |
+| `python rsi_core.py --mode test` | every control, including the 5 Phase-F reverse-engineering / strict-emergence controls above |
+
+## What Phase F adds, in one line
+
+With a two-stage `pipe` and a backward-decomposition engine, the system **cracks a
+previously-unsolvable hard family by reverse-engineering it** — and the strict,
+cross-group, previously-OPEN, load-bearing measurement reports **real cross-domain
+emergence = 0**, with the discovered abstractions provably local and the absent bridge
+located exactly. The honest negative is the deliverable.
