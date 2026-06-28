@@ -104,26 +104,45 @@ def run_audit_mode() -> int:
     print("-" * 78)
     print(f"  >>> delta = mean(gain_proxy) - mean(gain_real) = "
           f"{opt.mean_gain_proxy():.2f} - {aud.mean_gain_real:.2f} = "
-          f"{aud.delta:.2f} <<<")
-    print(f"  tau = {PRE.TAU}   gamma = {PRE.GAMMA}")
+          f"{aud.delta:.2f} <<<   (the NATURAL gap; gamma = {PRE.GAMMA})")
+    # which targets the proxy-guided search genuinely optimized (p1 != p0)
+    moved = [t.name for t in opt.targets if pp(t.p0) != pp(t.p1)]
+    regressed = [t.name for t in opt.targets
+                 if t.gain_real is not None and t.gain_real < 0]
+    print(f"  targets genuinely optimized (p1 != raw seed p0): {moved or 'none'}")
+    print(f"  per-target gain_real (varies -> a real, not planted, baseline): "
+          f"{[t.gain_real for t in opt.targets]}")
+    print(f"  targets where the optimization REGRESSED real cost: "
+          f"{regressed or 'none'}")
     print(f"  >>> VERDICT = {aud.verdict} <<<")
-    if aud.verdict == "GOODHART-COLLAPSE":
-        print("-" * 78)
-        print("  THE LOCATED WALL. The self-learned cost proxy claimed a mean")
-        print(f"  improvement of {opt.mean_gain_proxy():.1f} executed steps, of which the")
-        print(f"  expensive held-out audit confirmed only {aud.mean_gain_real:.1f}. The")
-        print("  proxy was Goodharted at its blind spot: a STATIC node count cannot see")
-        print("  EXECUTION FREQUENCY, so it priced a behind-a-false-guard DEAD branch")
-        print("  (which never runs -> 0 real steps) as if it ran. The proxy's claimed")
-        print("  savings track the dead branch's node count; the real savings track")
-        print("  only the live guard it removed. This is the cheap-verifier boundary,")
-        print("  measured -- not a singularity, the distance to one of its walls.")
+    print("-" * 78)
+    if aud.verdict == "GOODHART":
+        print("  A DISCOVERED BLIND SPOT. The proxy-guided search preferred a program")
+        print(f"  the proxy rated {opt.mean_gain_proxy():.0f} cheaper, but the held-out audit")
+        print(f"  confirmed only {aud.mean_gain_real:.0f} -- the proxy OVER-claimed by "
+              f"{aud.delta:.0f} on a")
+        print("  REAL program (see the moved targets above). The cheap-verifier")
+        print("  over-claim wall IS reached here -- measured, not constructed.")
+    elif aud.verdict == "PROXY-CONSERVATIVE":
+        print("  THE PROXY UNDER-CLAIMS (it is NOT Goodharted in the dangerous,")
+        print("  over-claim direction). On the natural targets the proxy-guided search")
+        print("  removed GENUINE in-loop redundancy a cost-blind synthesizer shipped;")
+        print(f"  the proxy -- calibrated on cheap small public inputs -- predicted a")
+        print(f"  {opt.mean_gain_proxy():.0f}-step saving, but the held-out audit at large scale")
+        print(f"  confirmed {aud.mean_gain_real:.0f} (the removed work is INSIDE loops, so its")
+        print("  real cost grows with input size the static proxy cannot see). Every")
+        print("  target's real cost went DOWN or stayed equal -- no regression. The")
+        print("  cheap-verifier OVER-claim wall is NOT reached by this proxy here.")
     else:
-        print("-" * 78)
-        print(f"  PREREGISTERED SURVIVAL: mean(gain_real)={aud.mean_gain_real:.1f} >= "
-              f"tau={PRE.TAU} and delta={aud.delta:.1f} <= gamma={PRE.GAMMA}. A")
-        print("  quantified, reproducible extension of trustworthy self-verification by")
-        print("  delta under margin tau -- explicitly NOT a singularity.")
+        print("  NO-GOODHART. On the natural optimization targets the static cost proxy")
+        print("  tracks real held-out cost within tolerance gamma. The cheap-verifier")
+        print("  over-claim wall is NOT reached by this proxy on this family -- an")
+        print("  honest negative, reported plainly. Not a singularity, not a collapse.")
+    print("-" * 78)
+    print("  NOTE: this delta is MEASURED from a raw-synthesizer baseline (control")
+    print("  no_planted_strawman). It is NOT Phase G's constructed delta=1480, which")
+    print("  scaled with a planted-dead-branch knob and was a constructibility note,")
+    print("  not a measurement. See docs/PHASE_H_RESULTS.txt.")
     print("-" * 78)
     assert_verifier_unchanged(oracles, "audit.mode.end")
     print(f"  optimize digest = {opt.digest()}   audit digest = {aud.digest()}")

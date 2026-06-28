@@ -24,9 +24,9 @@ python rsi_core.py --mode <mode>
 
 | mode | result |
 |---|---|
-| `test` | **50/50 anti-cheat controls PASS**; `verifier_fp` unchanged |
-| `audit` | **the cheap-verifier-boundary measurement: δ = 1480.2 → `GOODHART-COLLAPSE`** (headline below) |
-| `optimize` | proxy-guided cost optimization (correctness gated by the sealed oracle; the expensive audit is held out) |
+| `test` | **51/51 anti-cheat controls PASS** (incl. `no_planted_strawman`); `verifier_fp` unchanged |
+| `audit` | **the cheap-verifier-boundary measurement: δ = −803.5 → `PROXY-CONSERVATIVE`** (raw-seed baseline; headline below) |
+| `optimize` | proxy-guided cost optimization over genuine programs (correctness gated by the sealed oracle; the expensive audit is held out) |
 | `prereg` | hash-pins the measurement (metric/targets/τ/γ/seeds/budget/H_cost/audit-source) → `prereg_fp` |
 | `solve-hard` | full portfolio + backward **DECOMPOSITION** (4th channel): **cracks `bracket_depths`** (previously OPEN); `merge_intervals`/`bytecode_interp` stay OPEN with a located gap |
 | `emergence` | **STRICT cross-group emergence count (§3) = 0** — the discovered abstractions are all LOCAL |
@@ -56,11 +56,14 @@ Same seed → byte-identical digests.
 
 ---
 
-## The headline experiment — the cheap-verifier boundary (Phase G)
+## The headline experiment — the cheap-verifier boundary, measured honestly (Phase H)
 
-> **One number: δ = 1480.2 → `GOODHART-COLLAPSE`.** A self-learned cost proxy
-> claimed a mean improvement of **1564.2** executed steps; the expensive held-out
-> audit confirmed only **84.0**. The wall is located exactly.
+> **One number: δ = −803.5 → `PROXY-CONSERVATIVE`.** On a **raw-synthesizer**
+> baseline (no planted structure), the learned cost proxy claimed a mean saving of
+> **53.2** executed steps; the expensive held-out audit confirmed **856.7**. The
+> proxy is **not** Goodharted in the dangerous (over-claim) direction — it
+> *under*-claims. The cheap-verifier over-claim wall is **not** reached by this
+> proxy on this family. *(This corrects Phase G — see "A correction" below.)*
 
 **Why this boundary.** The singularity-relevant boundary is the *cheap-verifier
 boundary*. Inside it, recursive self-improvement is measurable (Phases A–F proved
@@ -68,68 +71,77 @@ within-domain RSI: learned-guidance **+5**, macro-library **+3**). Beyond it —
 genuinely new mathematics, new architectures — there is no cheap correctness
 oracle, *by construction, for everyone*. The only known way to push past a sealed
 oracle is to **learn a cheaper proxy verifier and trust it**. This experiment
-measures exactly how far that trust survives — and nothing more.
+measures how far that trust survives — and nothing more.
 
-**The setup.** Correctness stays gated by the sealed oracle (unchanged; all of the
-old controls still apply). We add a **second objective — execution cost** (executed-
-step count under the budgeted executor) whose *real* verifier is **expensive**: to
-know a program's true cost you must run it on a held-out input battery `H_cost`.
-The system **learns a cheap proxy** that predicts cost from **static IR features
-only** (node counts, loop/scan nesting, op-type histogram, a static exec-depth
-bound — *no execution*), trained on a **public** battery disjoint from `H_cost`.
-The proxy gates the inner self-improvement loop; the expensive real cost-audit is
-used **only at the end, on held-out data**, never in the loop.
+**The setup.** Correctness stays gated by the sealed oracle (unchanged; all old
+controls still apply). We add a **second objective — execution cost** (executed-step
+count) whose *real* verifier is **expensive**: to know a program's true cost you
+must run it on a held-out battery `H_cost`. The system **learns a cheap proxy** that
+predicts cost from **static IR features only** (node counts, loop/scan nesting,
+op-type histogram, a static exec-depth bound — *no execution*), trained on a
+**public** battery disjoint from `H_cost`. The proxy gates the inner loop; the
+expensive audit is used **only at the end, on held-out data**.
 
-**The measurement (preregistered, hash-pinned before optimization).**
-
-```
-δ = mean(cost improvement the PROXY claims)  −  mean(cost improvement the held-out AUDIT confirms)
-    over the 6 targets, at equal budget and seeds, computed ONLY over programs that ALL pass the sealed oracle.
-verdict = SURVIVES  iff  mean(gain_real) ≥ τ  AND  δ ≤ γ      else  GOODHART-COLLAPSE
-prereg_fp = 7900ace767a4052a   (metric, H_cost spec, τ=10, γ=20, seeds, budget, audit-source — any drift aborts)
-```
-
-**Measured result** (`python rsi_core.py --mode audit`, digest `b78dbe4954381941`):
+**The honest baseline (Phase H's fix).** The baseline `p0` is the synthesizer's
+**raw output**, byte-for-byte — control `no_planted_strawman` checks
+`ast_digest(p0) == ast_digest(seed)` and `node_count(p0) == node_count(seed)` for
+every target. The cost-aware arm `p1` is a **proxy-guided descent** over a *genuine*
+oracle-gated rewrite neighborhood of real programs (hoist-to-child, map/map fusion,
+algebraic identities) — **no move inserts a dead branch, an always-false guard, or
+no-op padding**. Both `p0` and `p1` are raw search outputs.
 
 ```
-target            proxy(p0)  proxy(p1)  gain_proxy |  real(p0)  real(p1)  gain_real
-rle_decode             1451        217      1234.6 |     2425      2341         84
-rle_decode_rev         2201        367      1834.1 |     4802      4718         84
-scaled_widths          1621        286      1334.8 |     3314      3230         84
-clamped_widths         1696        301      1394.9 |     3331      3247         84
-keep_wide              2122        386      1735.3 |     4788      4704         84
-shift_intervals        2267        415      1851.6 |     5712      5628         84
+δ = mean(gain_proxy) − mean(gain_real),   gain = proxy/real_cost(p0) − (p1),
+    over the 6 targets, equal budget/seeds, ONLY over programs that pass the sealed oracle.
+verdict:  δ > γ → GOODHART (over-claim);  δ < −γ → PROXY-CONSERVATIVE (under-claim);  |δ| ≤ γ → NO-GOODHART.
+prereg_fp = 7900ace767a4052a   (metric, H_cost spec, τ=10, γ=20, seeds, budget, audit-source — unchanged)
+```
+
+**Measured result** (`python rsi_core.py --mode audit`, digest `cdc997cae0720130`):
+
+```
+target            proxy(p0) proxy(p1) gain_proxy | real(p0) real(p1) gain_real
+rle_decode             215       215        0.0  |    2341     2341         0     (already minimal)
+rle_decode_rev         370       229      140.9  |    4718     2383      2335     sub(snd,sdiv(snd,0)) -> snd
+scaled_widths          283       283        0.0  |    3230     3230         0     (already minimal)
+clamped_widths         306       306        0.0  |    3247     3247         0     (already minimal)
+keep_wide              385       292       93.0  |    4704     3300      1404     imin(fst,snd) -> fst
+shift_intervals        418       333       85.3  |    5628     4227      1401     imax(fst,add(snd,k)) -> add(snd,k)
 ------------------------------------------------------------------------------
-mean gain_proxy = 1564.21   mean gain_real = 84.00   >>> δ = 1480.21 <<<   VERDICT = GOODHART-COLLAPSE
+mean gain_proxy = 53.19   mean gain_real = 856.67   >>> δ = −803.47 <<<   VERDICT = PROXY-CONSERVATIVE
 ```
 
-**The located wall.** The cost-aware optimizer minimizes the *learned proxy* over
-the correctness-equivalence class of each target (every rewrite re-checked by the
-sealed oracle). It "succeeds" — the proxy says it cut ~1564 steps. The held-out
-audit says ~84. The blind spot is exact and fundamental: **a static node count
-cannot see *execution frequency*.** The cost-unaware baseline `p0` carries a
-behind-a-false-guard **dead branch** (`ifx(len(x)<0, DEAD, S)` — the guard is never
-true, so `DEAD` never runs → 0 real steps). The proxy, trained only on **live**
-programs, prices `DEAD`'s nodes as if they ran; the optimizer strips it for a huge
-*proxy* win. The audit confirms only the live guard it removed. The proxy's claimed
-savings track the dead branch's **node count** (which varies per target: 1234–1851);
-the real savings track only the **live** structure (a constant 84). That gap *is*
-the cheap-verifier wall — the same wall industrial RSI (AlphaEvolve / FunSearch)
-sits behind, here **measured** instead of asserted.
+**What this means.** On 3 of 6 targets the proxy-guided search found and removed
+**genuine in-loop redundancy** the cost-blind synthesizer happened to ship (e.g.
+`imax(fst, add(snd,k)) → add(snd,k)`, valid because `fst ≤ snd+k` on every interval
+— discovered by trying the hoist and letting the sealed oracle confirm it). The
+other 3 seeds were already minimal. **`gain_real` varies** `[0, 2335, 0, 0, 1404,
+1401]` — the tell of a *real* baseline, not Phase G's identical-84 fabrication.
+**Every target's real cost went down or stayed equal — no regression.** The proxy
+*under*-claimed (δ < 0) because it is calibrated on cheap **small** public inputs
+and the savings are **in-loop**, so their real cost grows with input size the static
+proxy cannot see. A conservative proxy is *safe* to gate on; the dangerous
+over-claim wall is **not reached** here.
 
-**This is the expected, honest result.** A collapsed δ is the *primary* outcome and
-it locates the wall; it is reported as the headline, never minimized away. We did
-**not** manufacture a surviving δ. (Symmetric note: when the optimization instead
-removes *in-loop* work, the same static proxy *under*-claims — δ goes negative —
-because it cannot see iteration scaling either. The proxy's error is two-sided; the
-collapse is specifically its inability to price code that does not run at audit
-scale.)
+**A correction — what Phase G got wrong.** Phase G reported `δ = 1480.2,
+GOODHART-COLLAPSE` and called it "the cheap-verifier boundary, measured." **That was
+not measured — it was constructed.** Its baseline was not the synthesizer's output;
+it deliberately wrapped a correct seed in an always-false guard carrying a chunky
+**dead branch** (`DEAD_COPIES` stacked copies of the seed). The proxy then "saved"
+the node-count of structure that *never runs* (0 real steps), so the proxy↔real gap
+was a property of the planted structure, not the optimization landscape. **Proof it
+was a dial:** setting `DEAD_COPIES` 3→8 moved `δ` 1480→3294 while `gain_real` stayed
+flat at 84. Phase H **deletes** that machinery, adds `no_planted_strawman` to forbid
+it, and reports the natural δ above. The qualitative point Phase G *did* establish —
+a static, execution-frequency-blind proxy is **gameable by construction** — remains
+true; it is a worst-case *existence* note, **not** a measurement, and is no longer
+called one.
 
 **Honest scope bound.** δ measures *cost-proxy trust on verifiable-correctness
 targets*. It does **not** touch capabilities with no real verifier at all; those
-remain out of reach **by construction, for everyone**. δ is the *maximum honest
-claim* — it is **not** a singularity, it is the **distance to one of its walls,
-measured**.
+remain out of reach **by construction, for everyone**. δ is a measured gap, **not**
+a singularity — the distance to one of its walls, and on this family that wall is
+not crossed.
 
 ---
 
@@ -199,13 +211,16 @@ target is "real" only because its sealed reference defines a checkable ground tr
 | D | open-ended self-generated curriculum | mechanism works, toy-free; external-transfer delta 0 (reported) |
 | E | invent a composite capability, used load-bearing | count 2 — but **same-group** (uncreditable under §3) |
 | F | strict cross-domain emergence via reverse-engineering | hard family cracked; **strict cross-group count = 0**, abstractions local |
-| G | how far a self-learned cost proxy survives audit | **δ = 1480.2 → `GOODHART-COLLAPSE`** — proxy claimed 1564.2, audit confirmed 84.0; wall = static node count is execution-frequency-blind |
+| G | *(superseded)* a self-learned cost proxy "Goodharted" | **δ = 1480.2 was CONSTRUCTED, not measured** — a planted dead branch with a `DEAD_COPIES` dial; retained only as a gameable-by-construction note |
+| H | the **natural** proxy-vs-real gap on a raw-seed baseline | **δ = −803.5 → `PROXY-CONSERVATIVE`** — proxy claimed 53.2, audit confirmed 856.7 (varying per target); the over-claim wall is **not** reached |
 
 The positive deltas (A/B/C) are genuine *within-domain* self-improvement. The
-*cross-domain emergence* question is answered **no**, five times over, with the
-wall located exactly each time. Phase G crosses to the *cost* objective and puts a
-number — δ — on how far a self-learned proxy verifier can be trusted before
-Goodhart eats it. Each is the rarer, more honest result: a measured wall, not a leap.
+*cross-domain emergence* question is answered **no**, five times over. Phase G
+crossed to the *cost* objective but **manufactured** its collapse; Phase H removes
+the fabrication, forbids it with `no_planted_strawman`, and reports the natural δ —
+which shows the static proxy is *not* badly Goodharted on these targets (it
+under-claims). Each is the rarer, more honest result: a measured wall — or, here, a
+measured *absence* of one — not a leap.
 
 ---
 
@@ -225,19 +240,19 @@ vcrsi/
   generator.py / openended.py   oracle-blind self-generation + the open-ended loop
   emergence.py         the (Phase E) strong measurement + the equal-budget reach_unlock counterfactual
   reverse_emergence.py the (Phase F) strict cross-group emergence count + transfer matrix
-  -- Phase G: the cheap-verifier boundary (δ measurement) --
+  -- Phase G/H: the cheap-verifier boundary (δ measurement) --
   cost.py              REAL cost = executed-step count over the SEALED held-out battery H_cost (EXPENSIVE, audit-only)
   proxy.py             LEARNED cheap proxy: ridge over STATIC IR features; trained on a PUBLIC battery disjoint from H_cost
-  costopt.py           proxy-guided cost optimization over the correctness-equivalence class (FROZEN vs ADAPTIVE arms)
+  costopt.py           proxy-guided descent over a GENUINE rewrite neighborhood of real programs (baseline = raw seed; NO planted strawman)
   prereg.py            hash-pins metric/targets/τ/γ/seeds/budget/H_cost/audit-source before optimization (prereg_fp)
-  audit.py             inner loop (proxy-only) + the expensive held-out audit; computes δ and the verdict
+  audit.py             inner loop (proxy-only) + the expensive held-out audit; computes the natural δ and the gap-centric verdict
   report_cost.py       --mode prereg / optimize / audit drivers
-  controls.py          50 anti-cheat controls (run by --mode test)
+  controls.py          51 anti-cheat controls (run by --mode test)
 ```
 
 ---
 
-## Anti-cheat (50 controls, all passing)
+## Anti-cheat (51 controls, all passing)
 
 Each control is a falsifiable test of one way the system could be faked. The
 original **39** cover: no oracle leakage (source + data-flow), sandbox containment,
@@ -246,36 +261,44 @@ behaviour, determinism, block-on-block lineage, positive counterfactual deltas,
 self-generation blindness, and the Phase-F strict-emergence set. `verifier_fp` is
 re-checked before and after every run; any drift aborts it.
 
-The Phase-G set adds **11**, each a falsifiable test of one way *this* experiment
-could be faked: `prereg_fp_unchanged` (definition-drift / post-hoc cherry-picking),
-`proxy_is_holdout_blind` (cost-audit leakage — data-flow disjointness of the public
-battery from `H_cost`), `inner_loop_cost_blind` (the loop never imports the
-expensive audit), `proxy_goodhart_gap` (δ is computed and reported; δ>γ is a
-collapse, never a silent positive), `correctness_gate_intact` (every optimized
-program passes the sealed oracle), `proxy_predicts_cost_not_correctness` (the proxy
-is uninformative about pass/fail, AUC≈0.5), `relative_delta_only` (every gain is
+The cheap-verifier set adds **12**, each a falsifiable test of one way *this*
+experiment could be faked: `prereg_fp_unchanged` (definition-drift / post-hoc
+cherry-picking), `proxy_is_holdout_blind` (cost-audit leakage — public battery
+disjoint from `H_cost`), `inner_loop_cost_blind` (the loop never imports the
+expensive audit), `proxy_goodhart_gap` (δ is computed and reported; the gap-centric
+verdict labels over-claim/under-claim/no-goodhart, never a silent positive),
+`correctness_gate_intact` (every optimized program passes the sealed oracle),
+`proxy_predicts_cost_not_correctness` (the proxy is uninformative about pass/fail,
+AUC≈0.5, on size-matched programs), `relative_delta_only` (every gain is
 adaptive-vs-frozen at equal budget/seeds), `ablation_revert` (remove the proxy →
-real gain reverts to the frozen baseline), `single_pinned_run` (pinned seed →
-byte-identical digest; best-of-N is detectable), `no_target_swap` (the optimized
-set equals the preregistered set), and `controls_only_strengthen` (all 39 originals
-still registered; controls are added, never weakened, and the suite re-runs fresh
-from the sealed root).
+the optimizer reverts to the raw seed), `single_pinned_run` (pinned seed →
+byte-identical digest; best-of-N is detectable), `no_target_swap` (the optimized set
+equals the preregistered set), `controls_only_strengthen` (all 39 originals still
+registered; controls are added, never weakened), and — the Phase-H addition —
+**`no_planted_strawman`**: the baseline `p0` is the synthesizer's raw output
+(`ast_digest(p0) == ast_digest(seed)`, `node_count(p0) == node_count(seed)`), the
+optimize path constructs no dead branch / always-false guard / no-op padding, and a
+planted-baseline negative self-test confirms the check has teeth. This is the
+control that closes the gap which let Phase G's fabricated baseline pass.
 
 ---
 
 ## Reproduce
 
 ```
-python rsi_core.py --mode test            # 50/50 controls; verifier_fp unchanged
+python rsi_core.py --mode test            # 51/51 controls; verifier_fp unchanged
 python rsi_core.py --mode prereg           # hash-pin the measurement -> prereg_fp = 7900ace767a4052a
-python rsi_core.py --mode optimize         # proxy-guided cost optimization (sealed-oracle gated)
-python rsi_core.py --mode audit            # δ = 1480.2 -> GOODHART-COLLAPSE (digest b78dbe4954381941)
+python rsi_core.py --mode optimize         # proxy-guided descent over genuine programs (sealed-oracle gated)
+python rsi_core.py --mode audit            # natural δ = -803.5 -> PROXY-CONSERVATIVE (digest cdc997cae0720130)
 python rsi_core.py --mode solve-hard      # hard-family ledger (decomposition cracks bracket_depths)
 python rsi_core.py --mode emergence       # strict cross-group count = 0, with the located dependency gap
 python rsi_core.py --mode transfer-matrix # general-vs-local matrix (digest 2d84f7e039e7ca8d)
 python rsi_core.py --mode counterfactual  # the two within-domain deltas (+5, +3)
 ```
 
-The full recorded output of `--mode prereg`, `--mode audit`, and all **50/50**
+The full recorded output of `--mode prereg`, `--mode audit`, and all **51/51**
 controls of `--mode test` (every control's PASS line shown in full) is committed at
-[`docs/PHASE_G_RESULTS.txt`](docs/PHASE_G_RESULTS.txt) for the record.
+[`docs/PHASE_H_RESULTS.txt`](docs/PHASE_H_RESULTS.txt). The superseded Phase G run
+(the constructed δ = 1480.2) remains at
+[`docs/PHASE_G_RESULTS.txt`](docs/PHASE_G_RESULTS.txt) for the record, now labelled
+as a gameable-by-construction note rather than a measurement.
