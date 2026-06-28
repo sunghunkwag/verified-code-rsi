@@ -17,6 +17,13 @@ programs over structured inputs.
     python rsi_core.py --mode demo            # adaptive run + complexity table + lineage
     python rsi_core.py --mode counterfactual  # adaptive vs frozen, equal budget/seeds
     python rsi_core.py --mode test            # the anti-cheat controls (§4)
+
+Cheap-verifier-boundary measurement (this phase -- observational RSI across the
+proxy-cost boundary; the deliverable is exactly one number, delta):
+
+    python rsi_core.py --mode prereg          # hash-pin the preregistration; emit prereg_fp
+    python rsi_core.py --mode optimize        # proxy-guided cost optimization (oracle-gated)
+    python rsi_core.py --mode audit           # expensive held-out real-cost audit; delta; verdict
 """
 from __future__ import annotations
 
@@ -26,6 +33,7 @@ from vcrsi.report import (run_demo, run_counterfactual_mode, run_transfer_mode,
                           run_ablation_mode, run_solve_hard,
                           run_openended_mode, run_emergence_mode,
                           run_transfer_matrix_mode)
+from vcrsi.report_cost import (run_prereg_mode, run_optimize_mode, run_audit_mode)
 from vcrsi.controls import run_controls
 
 
@@ -34,9 +42,16 @@ def main() -> int:
     ap.add_argument("--mode", choices=("demo", "counterfactual", "test",
                                        "transfer", "ablation", "solve-hard",
                                        "openended", "emergence",
-                                       "transfer-matrix"),
+                                       "transfer-matrix",
+                                       "prereg", "optimize", "audit"),
                     default="demo")
     args = ap.parse_args()
+    if args.mode == "prereg":
+        return run_prereg_mode()
+    if args.mode == "optimize":
+        return run_optimize_mode()
+    if args.mode == "audit":
+        return run_audit_mode()
     if args.mode == "demo":
         return run_demo()
     if args.mode == "counterfactual":

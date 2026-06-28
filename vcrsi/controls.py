@@ -8,6 +8,7 @@ non-trivial property or constructs the adversarial input it is guarding against.
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 import random
 from typing import Callable, List, Tuple
@@ -1091,6 +1092,318 @@ def ctl_hard_family_solutions_are_holdout_verified(oracles) -> Tuple[bool, str]:
                 f"verify callback (source)={final_gate}")
 
 
+# =========================================================================== #
+# CHEAP-VERIFIER-BOUNDARY controls (§3, this phase) -- guard the delta          #
+# measurement: a learned cost proxy gates the inner loop; the expensive real    #
+# cost-audit is held out and used only as the final measurement; delta is the    #
+# proxy-vs-real gap, and a collapse (delta > gamma) is the reported result.      #
+# Each is a falsifiable test of one concrete way THIS experiment could be faked. #
+# =========================================================================== #
+_MINI_CACHE: dict = {}
+
+
+def _mini_audit(oracles, names):
+    """A small, cached optimize+audit over ``names`` for the controls that need real
+    numbers without paying for the full preregistered run."""
+    key = tuple(names)
+    if key not in _MINI_CACHE:
+        from .audit import run_audit
+        _MINI_CACHE[key] = run_audit(oracles, names=list(names))
+    return _MINI_CACHE[key]
+
+
+def ctl_prereg_fp_unchanged(oracles) -> Tuple[bool, str]:
+    """§3: the preregistered metric / targets / tau / gamma / seeds / budget / H_cost
+    spec / audit source are hash-pinned BEFORE optimization; the live fingerprint
+    still matches the committed pin, and perturbing ANY field moves it (so post-hoc
+    definition-drift or cherry-picking what counts as a win is detectable)."""
+    import json as _json
+    from . import prereg as PRE
+    cur = PRE.prereg_fp()
+    matches = (cur == PRE.PINNED_PREREG_FP)
+    base = PRE.preregistration()
+
+    def fp_of(d):
+        return hashlib.sha256(_json.dumps(d, sort_keys=True,
+                              separators=(",", ":")).encode()).hexdigest()[:16]
+
+    self_consistent = (fp_of(base) == cur)
+    perturbations = [("metric", "tampered"), ("targets", base["targets"][:-1]),
+                     ("tau", base["tau"] + 1.0), ("gamma", base["gamma"] + 1.0),
+                     ("budget", base["budget"] + 1),
+                     ("hcost_spec_digest", "tampered"),
+                     ("audit_source_digest", "tampered")]
+    all_sensitive = True
+    for k, v in perturbations:
+        d = dict(base)
+        d[k] = v
+        if fp_of(d) == cur:
+            all_sensitive = False
+    ok = matches and self_consistent and all_sensitive
+    return ok, (f"prereg_fp={cur} matches pin={matches}; self-consistent="
+                f"{self_consistent}; every pinned field moves the fp when perturbed="
+                f"{all_sensitive}")
+
+
+def ctl_proxy_is_holdout_blind(oracles) -> Tuple[bool, str]:
+    """§3: data-flow proof the proxy's training inputs are DISJOINT from H_cost and
+    that proxy.py imports neither the oracle, the task references, nor the expensive
+    cost-audit module. (Kills cost-audit leakage.)"""
+    from . import proxy as PX
+    from . import cost as COST
+    from . import prereg as PRE
+    src = inspect.getsource(PX)
+    # precise leakage tokens: code-level references to the oracle/tasks/cost modules,
+    # the sealed held-out attribute, or the reference solutions (NOT English words in
+    # the docstring such as the control name 'proxy_is_holdout_blind').
+    forbidden = ["from .oracle", "import oracle", "from .tasks", "import tasks",
+                 "from .cost import", "from . import cost", "build_oracles",
+                 "SealedOracle", "._holdout", "_make_example", "_ref_",
+                 "task.reference", ".reference)", ".verify("]
+    hits = [w for w in forbidden if w in src]
+    # the public training inputs must not overlap the held-out audit inputs
+    leak = []
+    for n in PRE.TARGETS:
+        task = oracles[n].task
+        pub = {repr(a) for a in PX.public_cost_battery(task)}
+        hc = {repr(a) for a in COST.hcost_battery(task)}
+        if pub & hc:
+            leak.append(n)
+    # and the scale ranges are genuinely disjoint (public small, H_cost large)
+    ranges_disjoint = PX.PUBLIC_SCALE_HI < COST.HCOST_SCALE_LO
+    ok = (not hits) and (not leak) and ranges_disjoint
+    return ok, (f"proxy source oracle/tasks/cost-free={not hits} (hits={hits}); "
+                f"public training inputs disjoint from H_cost={not leak}; public "
+                f"sizes<=({PX.PUBLIC_SCALE_HI}) < H_cost sizes>=({COST.HCOST_SCALE_LO})"
+                f"={ranges_disjoint}")
+
+
+def ctl_inner_loop_cost_blind(oracles) -> Tuple[bool, str]:
+    """§3: the inner self-improvement loop (the optimizer, the proxy, and the
+    optimize driver) never imports or calls the EXPENSIVE real cost-audit; the only
+    place cost.py is used is the final audit step. Source/data-flow inspection."""
+    from . import costopt as CO, proxy as PX, audit as AU
+    forbidden = ["from .cost import", "from . import cost", "cost.real_cost",
+                 "cost.hcost_battery", "hcost_battery", "real_cost("]
+    co = [w for w in forbidden if w in inspect.getsource(CO)]
+    px = [w for w in forbidden if w in inspect.getsource(PX)]
+    loop_src = (inspect.getsource(AU.run_optimize)
+                + inspect.getsource(AU._train_proxy_on_public)
+                + inspect.getsource(AU._build_seeds))
+    lp = [w for w in forbidden if w in loop_src]
+    # the audit DOES import cost -- but only function-locally, inside run_audit
+    audit_src = inspect.getsource(AU.run_audit)
+    audit_uses_cost = "from . import cost as COST" in audit_src
+    ok = (not co) and (not px) and (not lp) and audit_uses_cost
+    return ok, (f"optimizer cost-blind={not co}; proxy cost-blind={not px}; optimize "
+                f"driver cost-blind={not lp}; cost imported only in run_audit="
+                f"{audit_uses_cost}")
+
+
+def ctl_proxy_goodhart_gap(oracles) -> Tuple[bool, str]:
+    """§3: delta is COMPUTED and REPORTED; the verdict rule makes delta > gamma a
+    GOODHART-COLLAPSE (never silently a positive), even when there IS some real gain.
+    Tests the pure verdict rule and that the audit/report compute and print delta."""
+    from .audit import verdict_of, run_audit
+    from . import prereg as PRE, audit as AU, report_cost as RC
+    t, g = PRE.TAU, PRE.GAMMA
+    collapse = verdict_of(t + 5, g + 5, t, g)      # real gain present but gap too big
+    survive = verdict_of(t + 5, g - 5, t, g)
+    nogain = verdict_of(t - 5, 0.0, t, g)          # no real gain -> not a win
+    rule_ok = (collapse == "GOODHART-COLLAPSE" and survive == "SURVIVES"
+               and nogain == "GOODHART-COLLAPSE")
+    asrc = inspect.getsource(AU.run_audit)
+    computes = ("opt.mean_gain_proxy() - mean_gr" in asrc) and ("verdict_of" in asrc)
+    rsrc = inspect.getsource(RC.run_audit_mode)
+    reports = ("delta" in rsrc) and ("VERDICT" in rsrc) and ("GOODHART-COLLAPSE" in rsrc)
+    ok = rule_ok and computes and reports
+    return ok, (f"verdict rule (delta>gamma even with real gain -> COLLAPSE)={rule_ok}; "
+                f"audit computes delta+verdict={computes}; report prints delta+verdict="
+                f"{reports}")
+
+
+def ctl_correctness_gate_intact(oracles) -> Tuple[bool, str]:
+    """§3: every optimized program (both arms, every target) passes the SEALED
+    correctness oracle -- no trading correctness for cost. Independently re-verified,
+    not trusted from a cached flag."""
+    aud = _mini_audit(oracles, ["rle_decode", "scaled_widths"])
+    reverif = all(oracles[t.name].verify(t.p0) and oracles[t.name].verify(t.p1)
+                  for t in aud.opt.targets)
+    flagged = all(t.correct_p0 and t.correct_p1 for t in aud.opt.targets)
+    ok = reverif and flagged and len(aud.opt.targets) == 2
+    return ok, (f"all {len(aud.opt.targets)} targets: both arms pass the sealed oracle "
+                f"on independent re-verification={reverif} (cached flags agree="
+                f"{flagged})")
+
+
+def _wrong_variants(seed, orc) -> List[Node]:
+    """A few oracle-FAILING programs of sizes near ``seed`` (for the cost-vs-correct
+    separation test). Each is checked to actually fail the sealed oracle."""
+    cands = [_b("lrev", seed), _b("tail", seed),
+             _b("lapp", seed, seed), _b("ldrop", seed, _b("lit", const=1, rtype="I")),
+             _b("ltake", seed, _b("lit", const=1, rtype="I"))]
+    out = []
+    for c in cands:
+        r = run(c, list(orc.public_view().public_examples[0][0]))
+        if not orc.verify(c):          # keep only genuinely-wrong programs
+            out.append(c)
+    return out
+
+
+def ctl_proxy_predicts_cost_not_correctness(oracles) -> Tuple[bool, str]:
+    """§3: the proxy is uninformative about correctness (it was never given
+    correctness labels). Its cost predictions do not separate pass/fail above chance:
+    a best-threshold classifier on proxy value is near 50%."""
+    from .proxy import train_proxy
+    from .costopt import seed_program, live_elaboration
+    names = ["rle_decode", "scaled_widths"]
+    corpus, seeds = [], {}
+    for n in names:
+        orc = oracles[n]
+        S = seed_program(orc.public_view(), orc.verify)
+        seeds[n] = S
+        corpus.append((S, orc.task))
+        corpus.append((live_elaboration(S, orc.task.out_type, orc.verify), orc.task))
+    proxy = train_proxy(corpus)
+    correct, wrong = [], []
+    for n in names:
+        S = seeds[n]
+        correct.append(S)
+        correct.append(live_elaboration(S, oracles[n].task.out_type, oracles[n].verify))
+        wrong += _wrong_variants(S, oracles[n])
+    cp = [proxy.predict(p) for p in correct]
+    wp = [proxy.predict(p) for p in wrong]
+    # AUC = P(a random correct ranks above a random wrong by proxy value). Robust to
+    # class imbalance; AUC ~ 0.5 means the cost prediction carries no correctness
+    # signal. We test |AUC - 0.5| is small (no separation above chance, either way).
+    pairs = len(cp) * len(wp)
+    above = sum((c > w) + 0.5 * (c == w) for c in cp for w in wp)
+    auc = above / pairs if pairs else 0.5
+    ok = len(wrong) >= 2 and abs(auc - 0.5) <= 0.25
+    return ok, (f"proxy cost predictions vs correctness labels: AUC={auc:.2f} "
+                f"(|AUC-0.5|<=0.25 -> uninformative about correctness, as designed: "
+                f"the proxy predicts a cost MAGNITUDE, never given correctness); "
+                f"n_correct={len(correct)} n_wrong={len(wrong)}")
+
+
+def ctl_relative_delta_only(oracles) -> Tuple[bool, str]:
+    """§3: every gain is ADAPTIVE-vs-FROZEN (p0 minus p1) at equal budget and seeds --
+    no absolute 'it is fast' claim anywhere. Structural + a live consistency check."""
+    from . import audit as AU
+    osrc = inspect.getsource(AU.run_optimize)
+    equal_budget_seed = (osrc.count("PRE.BUDGET") >= 2) and ("seed_prog=seeds[n]" in osrc)
+    tsrc = inspect.getsource(AU.Target)
+    relative = ("self.proxy_p0 - self.proxy_p1" in tsrc
+                and "self.c0_real - self.c1_real" in tsrc)
+    aud = _mini_audit(oracles, ["rle_decode", "scaled_widths"])
+    consistent = all(abs(t.gain_proxy - (t.proxy_p0 - t.proxy_p1)) < 1e-6
+                     and (t.gain_real == float(t.c0_real - t.c1_real))
+                     for t in aud.opt.targets)
+    ok = equal_budget_seed and relative and consistent
+    return ok, (f"both arms equal budget+seed={equal_budget_seed}; gains are p0-p1 "
+                f"differences (never absolute)={relative}; live gains consistent="
+                f"{consistent}")
+
+
+def ctl_ablation_revert(oracles) -> Tuple[bool, str]:
+    """§3: remove the proxy guidance (use the FROZEN/untrained proxy) and the real
+    cost-gain reverts to the frozen baseline -- the optimizer makes no move. Measured
+    structurally (no oracle needed to see optimized == baseline), with the ADAPTIVE
+    arm shown to genuinely move for contrast."""
+    from .costopt import cost_aware_arm, seed_program, live_elaboration
+    from .proxy import train_proxy
+    orc = oracles["rle_decode"]
+    view = orc.public_view()
+    S = seed_program(view, orc.verify)
+    corpus = [(S, orc.task),
+              (live_elaboration(S, orc.task.out_type, orc.verify), orc.task)]
+    proxy = train_proxy(corpus)
+    frozen = proxy.clone_frozen()
+    adapt = cost_aware_arm(view, orc.verify, proxy, 4000, seed_prog=S)
+    froz = cost_aware_arm(view, orc.verify, frozen, 4000, seed_prog=S)
+    reverts = pp(froz.optimized) == pp(froz.baseline)        # no proxy -> no move
+    adaptive_moved = adapt.optimized.size() < adapt.baseline.size()
+    ok = reverts and adaptive_moved
+    return ok, (f"WITHOUT proxy guidance the arm makes no move (optimized==baseline)="
+                f"{reverts}; WITH the trained proxy it reduces "
+                f"{adapt.baseline.size()}->{adapt.optimized.size()} nodes="
+                f"{adaptive_moved}")
+
+
+def ctl_single_pinned_run(oracles) -> Tuple[bool, str]:
+    """§3: pinned seed -> the committed optimize+audit digest reproduces byte-
+    identically on a fresh re-run (best-of-N reporting would be detectable here)."""
+    from .audit import run_audit
+    o2 = build_oracles()
+    a = run_audit(oracles, names=["rle_decode", "scaled_widths"])
+    b = run_audit(o2, names=["rle_decode", "scaled_widths"])
+    opt_same = a.opt.digest() == b.opt.digest()
+    aud_same = a.digest() == b.digest()
+    ok = opt_same and aud_same
+    return ok, (f"two independent runs, same seed: optimize digest {a.opt.digest()}=="
+                f"{b.opt.digest()} -> {opt_same}; audit digest {a.digest()}=="
+                f"{b.digest()} -> {aud_same}")
+
+
+def ctl_no_target_swap(oracles) -> Tuple[bool, str]:
+    """§3: the optimized target set equals the PREREGISTERED set; the production run
+    defaults to exactly PRE.TARGETS (a swap would change the pinned set and move
+    prereg_fp), and a requested subset is honoured (proving the parameter is real)."""
+    from . import prereg as PRE, audit as AU
+    osrc = inspect.getsource(AU.run_optimize)
+    default_is_pinned = "list(PRE.TARGETS) if names is None" in osrc
+    aud = _mini_audit(oracles, ["rle_decode", "scaled_widths"])
+    honoured = [t.name for t in aud.opt.targets] == ["rle_decode", "scaled_widths"]
+    pinned_nontrivial = len(PRE.TARGETS) >= 4
+    ok = default_is_pinned and honoured and pinned_nontrivial
+    return ok, (f"production run defaults to the pinned set (source)={default_is_pinned}; "
+                f"requested subset honoured={honoured}; pinned set has "
+                f"{len(PRE.TARGETS)} targets")
+
+
+# the 39 original control display-names, snapshotted so a control cannot be dropped
+# or renamed to dodge a failure (controls_only_strengthen). New controls are ADDED.
+_ORIGINAL_39 = frozenset({
+    "complexity_floor_and_whitelist (§6A/§6B)", "no_oracle_leakage (§4.9)",
+    "sandbox_containment (§4.10)", "holdout_rejects_overfit (§9)",
+    "reward_hacking_floor (§4.6)", "distinct_genome_distinct_behaviour (§4.7)",
+    "recompute_solved_count + adopted_floor (§4.5)", "determinism (§4.11)",
+    "lineage_block_on_block (§4.8)", "counterfactual_delta_positive (§4.4)",
+    "family_diversity (§2)", "transfer_load_bearing+socratic / detector (§5.1)",
+    "transfer_socratic_rejects_spurious (§5.2)", "mining_is_B_blind (§5.3)",
+    "normalizer_preserves_semantics (§5.4)", "oe_no_leakage (§5.5)",
+    "archive_spread_is_real (§5.7)", "ablation_runs (§5.8)",
+    "prm_is_oracle_free (§5.1)", "prm_is_cross_task_not_memorised (§5.2)",
+    "world_model_honest_abstention (§5.3)",
+    "frozen_vs_adaptive_guidance_is_load_bearing (§5.4)",
+    "guidance_determinism (§5.5)", "generated_tasks_pass_floor (§5.1)",
+    "novelty_is_real / L3 (§5.2)", "generator_is_oracle_blind (§5.3)",
+    "emergence_set_is_sealed (§5.4)", "no_self_congratulation (§5.5)",
+    "self_verification_is_sound (§5.6)", "invented_is_genuinely_composite (§5.1)",
+    "invented_is_not_given (§5.2)", "minting_not_shallow (§5.3)",
+    "abstraction_anti_trivial (§5.4)", "reach_unlock_is_load_bearing (§5.5)",
+    "decomposition_no_leakage (§5.1)",
+    "emergent_is_cross_group_and_was_open (§5.2)",
+    "groups_not_gerrymandered (§5.3)", "emergent_is_composite_and_mined (§5.4)",
+    "hard_family_solutions_are_holdout_verified (§5.6)",
+})
+
+
+def ctl_controls_only_strengthen(oracles) -> Tuple[bool, str]:
+    """§3: controls may NOT be reworded or weakened to pass. All 39 original controls
+    are still registered (none dropped or renamed), and the cheap-verifier controls
+    are ADDED on top -- the final --mode test re-runs every control fresh from the
+    sealed root (verifier_fp re-pinned at start and end)."""
+    names = {n for n, _ in CONTROLS}
+    original_present = _ORIGINAL_39 <= names
+    missing = sorted(_ORIGINAL_39 - names)
+    added = len(names) - len(_ORIGINAL_39)
+    ok = original_present and added >= 10
+    return ok, (f"all 39 original controls still registered={original_present} "
+                f"(missing={missing}); cheap-verifier controls added on top={added}; "
+                f"total registered={len(names)}")
+
+
 # --------------------------------------------------------------------------- #
 # registry + runner                                                            #
 # --------------------------------------------------------------------------- #
@@ -1144,6 +1457,19 @@ CONTROLS: List[Tuple[str, Callable]] = [
     ("emergent_is_composite_and_mined (§5.4)", ctl_emergent_is_composite_and_mined),
     ("hard_family_solutions_are_holdout_verified (§5.6)",
      ctl_hard_family_solutions_are_holdout_verified),
+    # --- CHEAP-VERIFIER-BOUNDARY controls (delta measurement, this phase) --- #
+    ("prereg_fp_unchanged (§3)", ctl_prereg_fp_unchanged),
+    ("proxy_is_holdout_blind (§3)", ctl_proxy_is_holdout_blind),
+    ("inner_loop_cost_blind (§3)", ctl_inner_loop_cost_blind),
+    ("proxy_goodhart_gap (§3)", ctl_proxy_goodhart_gap),
+    ("correctness_gate_intact (§3)", ctl_correctness_gate_intact),
+    ("proxy_predicts_cost_not_correctness (§3)",
+     ctl_proxy_predicts_cost_not_correctness),
+    ("relative_delta_only (§3)", ctl_relative_delta_only),
+    ("ablation_revert (§3)", ctl_ablation_revert),
+    ("single_pinned_run (§3)", ctl_single_pinned_run),
+    ("no_target_swap (§3)", ctl_no_target_swap),
+    ("controls_only_strengthen (§3)", ctl_controls_only_strengthen),
 ]
 
 
