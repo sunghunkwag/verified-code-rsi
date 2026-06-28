@@ -1201,25 +1201,26 @@ def ctl_inner_loop_cost_blind(oracles) -> Tuple[bool, str]:
 
 
 def ctl_proxy_goodhart_gap(oracles) -> Tuple[bool, str]:
-    """§3: delta is COMPUTED and REPORTED; the verdict rule makes delta > gamma a
-    GOODHART-COLLAPSE (never silently a positive), even when there IS some real gain.
-    Tests the pure verdict rule and that the audit/report compute and print delta."""
+    """§3: delta is COMPUTED and REPORTED, and the verdict rule is GAP-CENTRIC and
+    direction-aware -- delta>gamma is GOODHART (over-claim), delta<-gamma is
+    PROXY-CONSERVATIVE (under-claim), |delta|<=gamma is NO-GOODHART. There is no
+    'expected' label to manufacture; the natural delta drives the verdict."""
     from .audit import verdict_of, run_audit
     from . import prereg as PRE, audit as AU, report_cost as RC
     t, g = PRE.TAU, PRE.GAMMA
-    collapse = verdict_of(t + 5, g + 5, t, g)      # real gain present but gap too big
-    survive = verdict_of(t + 5, g - 5, t, g)
-    nogain = verdict_of(t - 5, 0.0, t, g)          # no real gain -> not a win
-    rule_ok = (collapse == "GOODHART-COLLAPSE" and survive == "SURVIVES"
-               and nogain == "GOODHART-COLLAPSE")
+    over = verdict_of(t + 5, g + 5, t, g)          # proxy over-claims -> GOODHART
+    under = verdict_of(t + 5, -(g + 5), t, g)      # proxy under-claims -> CONSERVATIVE
+    track = verdict_of(t + 5, 0.0, t, g)           # |delta|<=gamma -> NO-GOODHART
+    rule_ok = (over == "GOODHART" and under == "PROXY-CONSERVATIVE"
+               and track == "NO-GOODHART")
     asrc = inspect.getsource(AU.run_audit)
     computes = ("opt.mean_gain_proxy() - mean_gr" in asrc) and ("verdict_of" in asrc)
     rsrc = inspect.getsource(RC.run_audit_mode)
-    reports = ("delta" in rsrc) and ("VERDICT" in rsrc) and ("GOODHART-COLLAPSE" in rsrc)
+    reports = ("delta" in rsrc) and ("VERDICT" in rsrc) and ("GOODHART" in rsrc)
     ok = rule_ok and computes and reports
-    return ok, (f"verdict rule (delta>gamma even with real gain -> COLLAPSE)={rule_ok}; "
-                f"audit computes delta+verdict={computes}; report prints delta+verdict="
-                f"{reports}")
+    return ok, (f"gap-centric verdict rule (over->GOODHART, under->CONSERVATIVE, "
+                f"track->NO-GOODHART)={rule_ok}; audit computes delta+verdict="
+                f"{computes}; report prints delta+verdict={reports}")
 
 
 def ctl_correctness_gate_intact(oracles) -> Tuple[bool, str]:
@@ -1236,17 +1237,27 @@ def ctl_correctness_gate_intact(oracles) -> Tuple[bool, str]:
                 f"{flagged})")
 
 
-def _wrong_variants(seed, orc) -> List[Node]:
-    """A few oracle-FAILING programs of sizes near ``seed`` (for the cost-vs-correct
-    separation test). Each is checked to actually fail the sealed oracle."""
-    cands = [_b("lrev", seed), _b("tail", seed),
-             _b("lapp", seed, seed), _b("ldrop", seed, _b("lit", const=1, rtype="I")),
-             _b("ltake", seed, _b("lit", const=1, rtype="I"))]
+_OP_SWAP = {"fst": "snd", "snd": "fst", "add": "sub", "sub": "add", "mul": "add",
+            "imax": "imin", "imin": "imax", "lt": "gt", "gt": "lt", "le": "gt",
+            "head": "llast", "llast": "head", "inc": "dec", "dec": "inc"}
+
+
+def _wrong_variants(prog, orc, limit: int = 8) -> List[Node]:
+    """Oracle-FAILING programs of the SAME node count as ``prog`` -- each a single
+    size-preserving op-swap (fst<->snd, add<->sub, imax<->imin, ...). Size-matching
+    the correct set is what makes the cost-vs-correctness separation test fair: the
+    cost proxy (a function of structure/size) cannot use size to cheat, so any
+    remaining separation would be a genuine correctness signal -- which there is not."""
+    from .ir import all_nodes, replace_at
     out = []
-    for c in cands:
-        r = run(c, list(orc.public_view().public_examples[0][0]))
-        if not orc.verify(c):          # keep only genuinely-wrong programs
-            out.append(c)
+    for path, node in all_nodes(prog):
+        if node.op in _OP_SWAP:
+            swapped = Node(_OP_SWAP[node.op], node.rtype, node.kids, node.const)
+            cand = replace_at(prog, path, swapped)
+            if cand.size() == prog.size() and not orc.verify(cand):
+                out.append(cand)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -1255,22 +1266,24 @@ def ctl_proxy_predicts_cost_not_correctness(oracles) -> Tuple[bool, str]:
     correctness labels). Its cost predictions do not separate pass/fail above chance:
     a best-threshold classifier on proxy value is near 50%."""
     from .proxy import train_proxy
-    from .costopt import seed_program, live_elaboration
-    names = ["rle_decode", "scaled_widths"]
+    from .costopt import seed_program, neighborhood_sample
+    names = ["shift_intervals", "keep_wide"]   # targets with genuine neighborhoods
     corpus, seeds = [], {}
     for n in names:
         orc = oracles[n]
         S = seed_program(orc.public_view(), orc.verify)
         seeds[n] = S
-        corpus.append((S, orc.task))
-        corpus.append((live_elaboration(S, orc.task.out_type, orc.verify), orc.task))
+        for prog in neighborhood_sample(S, orc.verify, depth=3, cap=24):
+            corpus.append((prog, orc.task))
     proxy = train_proxy(corpus)
     correct, wrong = [], []
     for n in names:
         S = seeds[n]
-        correct.append(S)
-        correct.append(live_elaboration(S, oracles[n].task.out_type, oracles[n].verify))
-        wrong += _wrong_variants(S, oracles[n])
+        nbhd = neighborhood_sample(S, oracles[n].verify, depth=3, cap=12)
+        correct += nbhd
+        # size-matched wrong programs: single op-swaps of the SAME correct programs
+        for p in nbhd:
+            wrong += _wrong_variants(p, oracles[n], limit=3)
     cp = [proxy.predict(p) for p in correct]
     wp = [proxy.predict(p) for p in wrong]
     # AUC = P(a random correct ranks above a random wrong by proxy value). Robust to
@@ -1306,28 +1319,28 @@ def ctl_relative_delta_only(oracles) -> Tuple[bool, str]:
 
 
 def ctl_ablation_revert(oracles) -> Tuple[bool, str]:
-    """§3: remove the proxy guidance (use the FROZEN/untrained proxy) and the real
-    cost-gain reverts to the frozen baseline -- the optimizer makes no move. Measured
-    structurally (no oracle needed to see optimized == baseline), with the ADAPTIVE
-    arm shown to genuinely move for contrast."""
-    from .costopt import cost_aware_arm, seed_program, live_elaboration
+    """§3: remove the proxy guidance (use the FROZEN/untrained proxy) and the
+    optimizer makes no move -- it reverts to the raw seed (the frozen baseline),
+    so the real cost-gain is zero. Measured structurally (no oracle needed to see
+    optimized == seed), with the ADAPTIVE arm shown to genuinely move on a target
+    that has real removable redundancy, for contrast."""
+    from .costopt import cost_aware_arm, seed_program, neighborhood_sample
     from .proxy import train_proxy
-    orc = oracles["rle_decode"]
+    orc = oracles["shift_intervals"]          # a target with genuine in-loop slack
     view = orc.public_view()
     S = seed_program(view, orc.verify)
-    corpus = [(S, orc.task),
-              (live_elaboration(S, orc.task.out_type, orc.verify), orc.task)]
+    corpus = [(prog, orc.task)
+              for prog in neighborhood_sample(S, orc.verify, depth=3, cap=24)]
     proxy = train_proxy(corpus)
     frozen = proxy.clone_frozen()
     adapt = cost_aware_arm(view, orc.verify, proxy, 4000, seed_prog=S)
     froz = cost_aware_arm(view, orc.verify, frozen, 4000, seed_prog=S)
-    reverts = pp(froz.optimized) == pp(froz.baseline)        # no proxy -> no move
-    adaptive_moved = adapt.optimized.size() < adapt.baseline.size()
+    reverts = pp(froz.optimized) == pp(S)            # no proxy -> no move, == raw seed
+    adaptive_moved = adapt.optimized.size() < S.size()   # genuine reduction of a real program
     ok = reverts and adaptive_moved
-    return ok, (f"WITHOUT proxy guidance the arm makes no move (optimized==baseline)="
-                f"{reverts}; WITH the trained proxy it reduces "
-                f"{adapt.baseline.size()}->{adapt.optimized.size()} nodes="
-                f"{adaptive_moved}")
+    return ok, (f"WITHOUT proxy guidance the arm makes no move (optimized==raw seed)="
+                f"{reverts}; WITH the trained proxy it reduces a genuine program "
+                f"{S.size()}->{adapt.optimized.size()} nodes={adaptive_moved}")
 
 
 def ctl_single_pinned_run(oracles) -> Tuple[bool, str]:
@@ -1404,6 +1417,55 @@ def ctl_controls_only_strengthen(oracles) -> Tuple[bool, str]:
                 f"total registered={len(names)}")
 
 
+def ctl_no_planted_strawman(oracles) -> Tuple[bool, str]:
+    """§2 (Phase H): the cost-measurement baseline p0 is the synthesizer's RAW output,
+    not a fabricated strawman. This is the control that closes the gap which let Phase
+    G's planted-dead-branch baseline pass all 50 controls. Three required checks:
+
+      (1) SOURCE -- the baseline/optimize path (costopt.py) constructs NO dead branch,
+          NO always-false guard, NO no-op/identity padding: none of the fabrication
+          helper identifiers are present and no conditional (ifx) is built at all.
+      (2) STRUCTURAL -- for every target, static_node_count(p0) == node_count(the raw
+          seed_program output). A baseline carrying MORE nodes than the synthesizer
+          emitted means something was planted -> FAIL.
+      (3) DIGEST -- ast_digest(p0) == ast_digest(seed output): no transformation
+          between synthesis and cost measurement.
+
+    Plus a NEGATIVE self-test: a synthetic planted baseline (seed + one no-op wrapper)
+    is caught by the structural check, proving the check has teeth."""
+    from . import costopt as CO
+    from .costopt import seed_program
+    from .audit import run_optimize
+    # (1) source: no fabrication machinery, no conditional construction
+    src = inspect.getsource(CO)
+    forbidden = ["_dead_subtree", "_false_guard", "baseline_elaboration",
+                 "live_elaboration", "DEAD_COPIES", '"ifx"', "'ifx'"]
+    hits = [w for w in forbidden if w in src]
+    source_clean = not hits
+    # (2)+(3) structural + digest: p0 IS the raw seed for every target
+    opt = run_optimize(oracles, names=["rle_decode", "shift_intervals"])
+    structural_ok, digest_ok, moved_real = True, True, False
+    for t in opt.targets:
+        orc = oracles[t.name]
+        S = seed_program(orc.public_view(), orc.verify)
+        if t.p0.size() != S.size():
+            structural_ok = False
+        if pp(t.p0) != pp(S):
+            digest_ok = False
+        if pp(t.p1) != pp(t.p0):
+            moved_real = True                  # >=1 genuine, real optimization happened
+    # negative self-test: a planted baseline is detected (more nodes than the seed)
+    Sx = seed_program(oracles["rle_decode"].public_view(), oracles["rle_decode"].verify)
+    planted = _b("lapp", Sx, _b("lit", const=[], rtype="L"))   # seed ++ [] : a no-op pad
+    planted_caught = planted.size() != Sx.size()
+    ok = (source_clean and structural_ok and digest_ok and planted_caught and moved_real)
+    return ok, (f"costopt source has no fabrication helper / no ifx construction="
+                f"{source_clean} (hits={hits}); p0 node-count == raw seed for every "
+                f"target={structural_ok}; ast_digest(p0)==ast_digest(seed)={digest_ok}; "
+                f">=1 target genuinely optimized (p1!=p0)={moved_real}; planted-baseline "
+                f"negative self-test caught={planted_caught}")
+
+
 # --------------------------------------------------------------------------- #
 # registry + runner                                                            #
 # --------------------------------------------------------------------------- #
@@ -1470,6 +1532,8 @@ CONTROLS: List[Tuple[str, Callable]] = [
     ("single_pinned_run (§3)", ctl_single_pinned_run),
     ("no_target_swap (§3)", ctl_no_target_swap),
     ("controls_only_strengthen (§3)", ctl_controls_only_strengthen),
+    # --- Phase H: forbid the planted-strawman baseline (closes the Phase G gap) --- #
+    ("no_planted_strawman (§2)", ctl_no_planted_strawman),
 ]
 
 

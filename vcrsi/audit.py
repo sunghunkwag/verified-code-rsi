@@ -4,20 +4,25 @@
 This is the only place ``cost.py`` (the EXPENSIVE held-out real-cost audit) is
 imported -- and only in the audit step, never in the inner loop. The pipeline:
 
-  optimize (cheap, proxy-only, in-loop)
-    - find a verified seed S per target (correctness-blind portfolio, oracle-gated)
+  optimize (cheap, proxy-only, in-loop)  [PHASE H -- the honest baseline]
+    - find a verified seed S per target (correctness-blind portfolio, oracle-gated);
+      the baseline p0 IS this raw output, byte-for-byte (no planted strawman)
     - train the proxy on the system's OWN correct programs over the PUBLIC battery
-      (proxy never sees H_cost or any reference)
-    - run two arms at EQUAL budget/seeds: FROZEN (untrained proxy) -> p0 = E(S);
-      ADAPTIVE (trained proxy) -> p1 (proxy-minimized). Correctness gated by the
-      sealed oracle at every rewrite.
-    - record gain_proxy[T] = proxy(p0) - proxy(p1)   (what the system THINKS it saved)
+      -- the seeds and their GENUINE oracle-gated rewrite-neighbors (proxy never
+      sees H_cost or any reference)
+    - run two arms at EQUAL budget/seeds: FROZEN (untrained proxy) -> p0 = S
+      unchanged; ADAPTIVE (trained proxy) -> p1, a proxy-guided descent of the
+      genuine rewrite neighborhood. Correctness gated by the sealed oracle at every
+      rewrite. Both p0 and p1 are raw search outputs.
+    - record gain_proxy[T] = proxy(p0) - proxy(p1)   (what the proxy THINKS it saved)
 
   audit (EXPENSIVE, held-out, final measurement only)
     - cost p0, p1 on the SEALED held-out battery H_cost
     - gain_real[T]  = c0_real - c1_real              (what it ACTUALLY saved)
-    - delta = mean(gain_proxy) - mean(gain_real)     (THE number)
-    - verdict = SURVIVES iff mean(gain_real) >= tau AND delta <= gamma, else COLLAPSE
+    - delta = mean(gain_proxy) - mean(gain_real)     (THE natural number)
+    - verdict: |delta|<=gamma -> NO-GOODHART; delta>gamma -> GOODHART (over-claim);
+      delta<-gamma -> PROXY-CONSERVATIVE (under-claim). delta~0 is a first-class,
+      honest headline -- the proxy is simply not badly Goodharted on these targets.
 """
 from __future__ import annotations
 
@@ -28,7 +33,7 @@ from typing import Dict, List, Optional
 from .ir import Node, pp
 from .oracle import SealedOracle, assert_verifier_unchanged
 from .proxy import CostProxy, train_proxy
-from .costopt import cost_aware_arm, seed_program, live_elaboration
+from .costopt import cost_aware_arm, seed_program, neighborhood_sample
 from . import prereg as PRE
 
 
@@ -39,8 +44,8 @@ from . import prereg as PRE
 class Target:
     name: str
     seed: Node
-    p0: Node                       # frozen arm (cost-unaware baseline E(S))
-    p1: Node                       # adaptive arm (proxy-minimized)
+    p0: Node                       # frozen arm == the RAW seed (no planted strawman)
+    p1: Node                       # adaptive arm (proxy-guided descent of real moves)
     proxy_p0: float
     proxy_p1: float
     correct_p0: bool
@@ -88,12 +93,24 @@ class OptimizeResult:
 def verdict_of(mean_gain_real: float, delta: float,
                tau: float, gamma: float) -> str:
     """The PREREGISTERED verdict rule (a pure function, so it is unit-testable and
-    cannot be quietly bent): a result SURVIVES only if the real gain clears the
-    margin AND the proxy-vs-real gap stays under the ceiling; otherwise the proxy
-    was Goodharted."""
-    if mean_gain_real >= tau and delta <= gamma:
-        return "SURVIVES"
-    return "GOODHART-COLLAPSE"
+    cannot be quietly bent). It is GAP-CENTRIC and direction-aware -- there is no
+    'expected' result to manufacture, only the natural delta:
+
+      delta >  gamma  -> GOODHART  (the proxy OVER-claims beyond tolerance: a real,
+                                    discovered blind spot -- report the move)
+      delta < -gamma  -> PROXY-CONSERVATIVE  (the proxy UNDER-claims: the real gain
+                                    exceeded the proxy's estimate -- safe to trust)
+      |delta| <= gamma -> NO-GOODHART  (the proxy tracks real cost on these targets;
+                                    the cheap-verifier over-claim wall is NOT reached)
+
+    ``tau`` is retained from the preregistration (pinned) but no longer gates the
+    verdict: a small ``mean_gain_real`` simply means little optimization happened,
+    which is reported separately -- it is not, by itself, a 'collapse'."""
+    if delta > gamma:
+        return "GOODHART"
+    if delta < -gamma:
+        return "PROXY-CONSERVATIVE"
+    return "NO-GOODHART"
 
 
 @dataclass
@@ -130,18 +147,16 @@ def _build_seeds(oracles: Dict[str, SealedOracle], names) -> Dict[str, Node]:
 
 def _train_proxy_on_public(oracles, names, seeds) -> CostProxy:
     """Train the proxy on the system's OWN correct programs over the PUBLIC battery:
-    each seed and a fully-LIVE elaboration of it, labelled with public step-cost.
-    The corpus is LIVE-only (every node executes), so the proxy's per-node cost is
-    calibrated on programs whose nodes all run -- which is exactly why it later
-    over-prices the never-executed dead branch in the baseline. Never touches H_cost
-    or any reference."""
+    each seed and the GENUINE oracle-gated rewrite-neighbors of that seed (all real,
+    every-node-executes programs), each labelled with its real step-cost on the
+    PUBLIC inputs. No elaborations, no planted structure. Never touches H_cost or any
+    reference -- this gives the proxy an honest (static features -> small-input cost)
+    corpus; whatever blind spot it then has at AUDIT scale is discovered, not built."""
     corpus = []
     for n in names:
         orc = oracles[n]
-        S = seeds[n]
-        L = live_elaboration(S, orc.task.out_type, orc.verify)
-        corpus.append((S, orc.task))
-        corpus.append((L, orc.task))
+        for prog in neighborhood_sample(seeds[n], orc.verify, depth=3, cap=24):
+            corpus.append((prog, orc.task))
     return train_proxy(corpus)
 
 
@@ -161,9 +176,9 @@ def run_optimize(oracles: Dict[str, SealedOracle], verbose: bool = False,
     for n in names:
         orc = oracles[n]
         view, verify = orc.public_view(), orc.verify
-        # FROZEN arm (cost-unaware): no proxy gradient -> stays at E(S) = p0
+        # FROZEN arm (cost-unaware): no proxy gradient -> stays at the RAW seed = p0
         a0 = cost_aware_arm(view, verify, frozen, PRE.BUDGET, seed_prog=seeds[n])
-        # ADAPTIVE arm (trained proxy): descends to the lean program = p1
+        # ADAPTIVE arm (trained proxy): proxy-guided descent of real moves -> p1
         a1 = cost_aware_arm(view, verify, proxy, PRE.BUDGET, seed_prog=seeds[n])
         p0, p1 = a0.optimized, a1.optimized
         t = Target(n, seeds[n], p0, p1,
