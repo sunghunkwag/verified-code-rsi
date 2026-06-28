@@ -1,21 +1,11 @@
-================================================================================
-SUPERSEDED BY PHASE H -- READ THIS FIRST.
-This file records Phase G's delta = 1480.2. That number was CONSTRUCTED, NOT
-MEASURED: the baseline carried a planted, always-false-guarded DEAD branch
-(DEAD_COPIES stacked copies of the seed). delta scaled with that knob
-(DEAD_COPIES 3->8 moved delta 1480->3294) while gain_real stayed flat at 84 --
-i.e. delta was a dial on inserted structure, not a property of the optimization.
-It is retained ONLY as a "PROXY IS GAMEABLE BY CONSTRUCTION -- worst-case
-existence proof, NOT a measurement." The honest, raw-seed measurement is in
-docs/PHASE_H_RESULTS.txt (natural delta = -803.5, PROXY-CONSERVATIVE). The
-fabrication machinery is deleted from the code and forbidden by the control
-no_planted_strawman. Do not cite the number below as "the cheap-verifier
-boundary" or as "measured."
-================================================================================
-
-PHASE G -- CHEAP-VERIFIER-BOUNDARY MEASUREMENT: RECORDED RESULTS
+PHASE H -- THE CHEAP-VERIFIER BOUNDARY, MEASURED HONESTLY: RECORDED RESULTS
 Generated from the committed repo state; reproducible with the commands shown.
-verifier_fp = 841c6f6277e7c8ef (unchanged)   prereg_fp = 7900ace767a4052a
+verifier_fp = 841c6f6277e7c8ef (unchanged)   prereg_fp = 7900ace767a4052a (unchanged)
+
+ROOT-CAUSE FIX: Phase G's delta=1480 was CONSTRUCTED (a planted dead branch
+with a DEAD_COPIES dial: 3->8 moved delta 1480->3294 while gain_real stayed 84).
+Phase H deletes that machinery, makes the baseline p0 the synthesizer's RAW
+output (control no_planted_strawman), and measures the NATURAL gap below.
 
 ############################################################################
 # python rsi_core.py --mode prereg
@@ -39,7 +29,7 @@ verifier_fp (sealed correctness oracle) = 841c6f6277e7c8ef
 ==============================================================================
 
 ############################################################################
-# python rsi_core.py --mode audit
+# python rsi_core.py --mode audit   (the NATURAL delta, raw-seed baseline)
 ############################################################################
 ==============================================================================
 VERIFIED-CODE-RSI -- AUDIT (expensive held-out real-cost; the delta)
@@ -48,37 +38,44 @@ held-out battery H_cost, over ONLY programs that pass the sealed oracle.
 verifier_fp = 841c6f6277e7c8ef   prereg_fp = 7900ace767a4052a
 ==============================================================================
 target              proxy(p0)  proxy(p1)   gain_prx |  real(p0)  real(p1) gain_real
-rle_decode               1451        217     1234.6 |      2425      2341        84
-rle_decode_rev           2201        367     1834.1 |      4802      4718        84
-scaled_widths            1621        286     1334.8 |      3314      3230        84
-clamped_widths           1696        301     1394.9 |      3331      3247        84
-keep_wide                2122        386     1735.3 |      4788      4704        84
-shift_intervals          2267        415     1851.6 |      5712      5628        84
+rle_decode                215        215        0.0 |      2341      2341         0
+rle_decode_rev            370        229      140.9 |      4718      2383      2335
+scaled_widths             283        283        0.0 |      3230      3230         0
+clamped_widths            306        306        0.0 |      3247      3247         0
+keep_wide                 385        292       93.0 |      4704      3300      1404
+shift_intervals           418        333       85.3 |      5628      4227      1401
 ------------------------------------------------------------------------------
   correctness_gate_intact (every audited program passes the sealed oracle): True
-  mean gain_proxy (claimed by the learned proxy) = 1564.21
-  mean gain_real  (confirmed by held-out audit)  = 84.00
+  mean gain_proxy (claimed by the learned proxy) = 53.19
+  mean gain_real  (confirmed by held-out audit)  = 856.67
 ------------------------------------------------------------------------------
-  >>> delta = mean(gain_proxy) - mean(gain_real) = 1564.21 - 84.00 = 1480.21 <<<
-  tau = 10.0   gamma = 20.0
-  >>> VERDICT = GOODHART-COLLAPSE <<<
+  >>> delta = mean(gain_proxy) - mean(gain_real) = 53.19 - 856.67 = -803.47 <<<   (the NATURAL gap; gamma = 20.0)
+  targets genuinely optimized (p1 != raw seed p0): ['rle_decode_rev', 'keep_wide', 'shift_intervals']
+  per-target gain_real (varies -> a real, not planted, baseline): [0.0, 2335.0, 0.0, 0.0, 1404.0, 1401.0]
+  targets where the optimization REGRESSED real cost: none
+  >>> VERDICT = PROXY-CONSERVATIVE <<<
 ------------------------------------------------------------------------------
-  THE LOCATED WALL. The self-learned cost proxy claimed a mean
-  improvement of 1564.2 executed steps, of which the
-  expensive held-out audit confirmed only 84.0. The
-  proxy was Goodharted at its blind spot: a STATIC node count cannot see
-  EXECUTION FREQUENCY, so it priced a behind-a-false-guard DEAD branch
-  (which never runs -> 0 real steps) as if it ran. The proxy's claimed
-  savings track the dead branch's node count; the real savings track
-  only the live guard it removed. This is the cheap-verifier boundary,
-  measured -- not a singularity, the distance to one of its walls.
+  THE PROXY UNDER-CLAIMS (it is NOT Goodharted in the dangerous,
+  over-claim direction). On the natural targets the proxy-guided search
+  removed GENUINE in-loop redundancy a cost-blind synthesizer shipped;
+  the proxy -- calibrated on cheap small public inputs -- predicted a
+  53-step saving, but the held-out audit at large scale
+  confirmed 857 (the removed work is INSIDE loops, so its
+  real cost grows with input size the static proxy cannot see). Every
+  target's real cost went DOWN or stayed equal -- no regression. The
+  cheap-verifier OVER-claim wall is NOT reached by this proxy here.
 ------------------------------------------------------------------------------
-  optimize digest = 824b362b7e4a0ed9   audit digest = b78dbe4954381941
+  NOTE: this delta is MEASURED from a raw-synthesizer baseline (control
+  no_planted_strawman). It is NOT Phase G's constructed delta=1480, which
+  scaled with a planted-dead-branch knob and was a constructibility note,
+  not a measurement. See docs/PHASE_H_RESULTS.txt.
+------------------------------------------------------------------------------
+  optimize digest = 92e8f23e4ae991ed   audit digest = cdc997cae0720130
   Same seed -> byte-identical digests (single_pinned_run).
 ==============================================================================
 
 ############################################################################
-# python rsi_core.py --mode test   (all 50 anti-cheat controls, full output)
+# python rsi_core.py --mode test   (all 51 anti-cheat controls, full output)
 ############################################################################
 ==============================================================================
 ANTI-CHEAT CONTROLS  (--mode test)
@@ -169,22 +166,24 @@ verifier_fp (hash-pinned correctness oracle) = 841c6f6277e7c8ef
 [PASS] inner_loop_cost_blind (§3)
        optimizer cost-blind=True; proxy cost-blind=True; optimize driver cost-blind=True; cost imported only in run_audit=True
 [PASS] proxy_goodhart_gap (§3)
-       verdict rule (delta>gamma even with real gain -> COLLAPSE)=True; audit computes delta+verdict=True; report prints delta+verdict=True
+       gap-centric verdict rule (over->GOODHART, under->CONSERVATIVE, track->NO-GOODHART)=True; audit computes delta+verdict=True; report prints delta+verdict=True
 [PASS] correctness_gate_intact (§3)
        all 2 targets: both arms pass the sealed oracle on independent re-verification=True (cached flags agree=True)
 [PASS] proxy_predicts_cost_not_correctness (§3)
-       proxy cost predictions vs correctness labels: AUC=0.35 (|AUC-0.5|<=0.25 -> uninformative about correctness, as designed: the proxy predicts a cost MAGNITUDE, never given correctness); n_correct=4 n_wrong=10
+       proxy cost predictions vs correctness labels: AUC=0.50 (|AUC-0.5|<=0.25 -> uninformative about correctness, as designed: the proxy predicts a cost MAGNITUDE, never given correctness); n_correct=4 n_wrong=12
 [PASS] relative_delta_only (§3)
        both arms equal budget+seed=True; gains are p0-p1 differences (never absolute)=True; live gains consistent=True
 [PASS] ablation_revert (§3)
-       WITHOUT proxy guidance the arm makes no move (optimized==baseline)=True; WITH the trained proxy it reduces 59->8 nodes=True
+       WITHOUT proxy guidance the arm makes no move (optimized==raw seed)=True; WITH the trained proxy it reduces a genuine program 14->11 nodes=True
 [PASS] single_pinned_run (§3)
-       two independent runs, same seed: optimize digest 53658d1bcfe40af8==53658d1bcfe40af8 -> True; audit digest 3959637edd59e315==3959637edd59e315 -> True
+       two independent runs, same seed: optimize digest b55315d6ea672034==b55315d6ea672034 -> True; audit digest 782a223ad7e359a7==782a223ad7e359a7 -> True
 [PASS] no_target_swap (§3)
        production run defaults to the pinned set (source)=True; requested subset honoured=True; pinned set has 6 targets
 [PASS] controls_only_strengthen (§3)
-       all 39 original controls still registered=True (missing=[]); cheap-verifier controls added on top=11; total registered=50
+       all 39 original controls still registered=True (missing=[]); cheap-verifier controls added on top=12; total registered=51
+[PASS] no_planted_strawman (§2)
+       costopt source has no fabrication helper / no ifx construction=True (hits=[]); p0 node-count == raw seed for every target=True; ast_digest(p0)==ast_digest(seed)=True; >=1 target genuinely optimized (p1!=p0)=True; planted-baseline negative self-test caught=True
 ------------------------------------------------------------------------------
 verifier_fp unchanged: True (841c6f6277e7c8ef -> 841c6f6277e7c8ef)
-controls passed: 50/50
+controls passed: 51/51
 ==============================================================================
