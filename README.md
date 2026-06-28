@@ -275,3 +275,7 @@ python rsi_core.py --mode emergence       # strict cross-group count = 0, with t
 python rsi_core.py --mode transfer-matrix # general-vs-local matrix (digest 2d84f7e039e7ca8d)
 python rsi_core.py --mode counterfactual  # the two within-domain deltas (+5, +3)
 ```
+
+The full recorded output of `--mode prereg`, `--mode audit`, and all **50/50**
+controls of `--mode test` (every control's PASS line shown in full) is committed at
+[`docs/PHASE_G_RESULTS.txt`](docs/PHASE_G_RESULTS.txt) for the record.

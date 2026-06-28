@@ -1,0 +1,175 @@
+PHASE G -- CHEAP-VERIFIER-BOUNDARY MEASUREMENT: RECORDED RESULTS
+Generated from the committed repo state; reproducible with the commands shown.
+verifier_fp = 841c6f6277e7c8ef (unchanged)   prereg_fp = 7900ace767a4052a
+
+############################################################################
+# python rsi_core.py --mode prereg
+############################################################################
+==============================================================================
+VERIFIED-CODE-RSI -- PREREGISTRATION (hash-pinned BEFORE optimization)
+verifier_fp (sealed correctness oracle) = 841c6f6277e7c8ef
+==============================================================================
+  metric              : executed_step_count
+  targets (6)         : ['rle_decode', 'rle_decode_rev', 'scaled_widths', 'clamped_widths', 'keep_wide', 'shift_intervals']
+  tau   (margin)      : 10.0   (a SURVIVING result needs mean(gain_real) >= tau)
+  gamma (gap ceiling) : 20.0   (delta > gamma  ==  Goodhart collapse)
+  seeds               : {'arm': 7, 'portfolio': 7}
+  budget (per arm)    : 4000
+  H_cost spec digest  : 3579b697ff71cbf3  (sealed held-out audit battery)
+  audit source digest : 0fcaaaf4a2c4dd11  (real-cost procedure)
+------------------------------------------------------------------------------
+  >>> prereg_fp = 7900ace767a4052a <<<
+  Any change to ANY pinned field moves this fingerprint and aborts the
+  run (control prereg_fp_unchanged + no_target_swap).
+==============================================================================
+
+############################################################################
+# python rsi_core.py --mode audit
+############################################################################
+==============================================================================
+VERIFIED-CODE-RSI -- AUDIT (expensive held-out real-cost; the delta)
+Cost p0 (cost-unaware baseline) and p1 (proxy-minimized) on the SEALED
+held-out battery H_cost, over ONLY programs that pass the sealed oracle.
+verifier_fp = 841c6f6277e7c8ef   prereg_fp = 7900ace767a4052a
+==============================================================================
+target              proxy(p0)  proxy(p1)   gain_prx |  real(p0)  real(p1) gain_real
+rle_decode               1451        217     1234.6 |      2425      2341        84
+rle_decode_rev           2201        367     1834.1 |      4802      4718        84
+scaled_widths            1621        286     1334.8 |      3314      3230        84
+clamped_widths           1696        301     1394.9 |      3331      3247        84
+keep_wide                2122        386     1735.3 |      4788      4704        84
+shift_intervals          2267        415     1851.6 |      5712      5628        84
+------------------------------------------------------------------------------
+  correctness_gate_intact (every audited program passes the sealed oracle): True
+  mean gain_proxy (claimed by the learned proxy) = 1564.21
+  mean gain_real  (confirmed by held-out audit)  = 84.00
+------------------------------------------------------------------------------
+  >>> delta = mean(gain_proxy) - mean(gain_real) = 1564.21 - 84.00 = 1480.21 <<<
+  tau = 10.0   gamma = 20.0
+  >>> VERDICT = GOODHART-COLLAPSE <<<
+------------------------------------------------------------------------------
+  THE LOCATED WALL. The self-learned cost proxy claimed a mean
+  improvement of 1564.2 executed steps, of which the
+  expensive held-out audit confirmed only 84.0. The
+  proxy was Goodharted at its blind spot: a STATIC node count cannot see
+  EXECUTION FREQUENCY, so it priced a behind-a-false-guard DEAD branch
+  (which never runs -> 0 real steps) as if it ran. The proxy's claimed
+  savings track the dead branch's node count; the real savings track
+  only the live guard it removed. This is the cheap-verifier boundary,
+  measured -- not a singularity, the distance to one of its walls.
+------------------------------------------------------------------------------
+  optimize digest = 824b362b7e4a0ed9   audit digest = b78dbe4954381941
+  Same seed -> byte-identical digests (single_pinned_run).
+==============================================================================
+
+############################################################################
+# python rsi_core.py --mode test   (all 50 anti-cheat controls, full output)
+############################################################################
+==============================================================================
+ANTI-CHEAT CONTROLS  (--mode test)
+verifier_fp (hash-pinned correctness oracle) = 841c6f6277e7c8ef
+==============================================================================
+[PASS] complexity_floor_and_whitelist (§6A/§6B)
+       all tasks clear §6A whitelist + §6B floor
+[PASS] no_oracle_leakage (§4.9)
+       synthesizer source is oracle-free; PublicView exposes only public data
+[PASS] sandbox_containment (§4.10)
+       no I/O/exec primitive exists; runaway loop -> StepLimit @ 50001 steps; memory bomb -> AllocLimit
+[PASS] holdout_rejects_overfit (§9)
+       overfit passes public=True, held-out rejects it=True (truncates at 8 pairs)
+[PASS] reward_hacking_floor (§4.6)
+       speed-only winner correct=False (steps=6, prog=''); oracle-gated winner correct=True
+[PASS] distinct_genome_distinct_behaviour (§4.7)
+       distinct genomes: fp_diff=True; default solves=True, crippled solves=False -> behaviour differs=True
+[PASS] recompute_solved_count + adopted_floor (§4.5)
+       reported solved=3, independently re-verified=3; all clear inlined floor=True
+[PASS] determinism (§4.11)
+       two runs, same seed: digests 1137cae31d47e153 == 1137cae31d47e153 -> True
+[PASS] lineage_block_on_block (§4.8)
+       B1(r4)->B2(r5), both load-bearing
+[PASS] counterfactual_delta_positive (§4.4)
+       adaptive 5 - frozen 3 = delta 2 (>0: True)
+[PASS] family_diversity (§2)
+       7 families; largest is 38% of 24 tasks (need >=4 families, none >40%) -> {'seqcode': 9, 'codec': 2, 'interval': 5, 'scan': 1, 'parse': 1, 'select': 3, 'project': 3}
+[PASS] transfer_load_bearing+socratic / detector (§5.1)
+       planted A->B transfer: load_bearing=True, socratic_admit=True, cross_group=True, spurious_rejected=True
+[PASS] transfer_socratic_rejects_spurious (§5.2)
+       spurious-block fits_public=False; Socratic admit=False (must be False) -- distinguishing input found -> spurious (e.g. ([(17, 17), (3, 8), (0, 4), (12, 18), (-1, 4)],))
+[PASS] mining_is_B_blind (§5.3)
+       B=select held out; mined block home-families={'seqcode'} (B absent=True); OE/archive source holdout-free=True
+[PASS] normalizer_preserves_semantics (§5.4)
+       normalized lrev(lrev x)->$0 (changed=True); semantics preserved=True; behaviour-changing rewrite rejected=True
+[PASS] oe_no_leakage (§5.5)
+       OE source holdout-free=True; OE winner passes SEALED holdout via oracle=True
+[PASS] archive_spread_is_real (§5.7)
+       archive coverage: {'filled_cells': 3, 'families_spanned': 2, 'groups': ['select', 'seqcode']} (need cells spanning >=2 families)
+[PASS] ablation_runs (§5.8)
+       all 6/6 ablation configurations executed end-to-end
+[PASS] prm_is_oracle_free (§5.1)
+       PRM/feature source oracle-free=True (hits=[]); features read only public train I/O=True
+[PASS] prm_is_cross_task_not_memorised (§5.2)
+       PRM is 8-dim regardless of #tasks (dims (8, 8)->(8, 8)); params do not grow per task=True; frozen!=trained digest & frozen-scores-zero=True
+[PASS] world_model_honest_abstention (§5.3)
+       world model uses op_step not impl-table (reads_impl=False, uses_step=True); covered==real=True; uncovered op abstains=True
+[PASS] frozen_vs_adaptive_guidance_is_load_bearing (§5.4)
+       adaptive guidance solved ['rle_decode', 'rle_decode_sorted']; frozen guidance solved []; adaptive-only (OPEN under frozen)=['rle_decode', 'rle_decode_sorted'] -> load-bearing=True
+[PASS] guidance_determinism (§5.5)
+       two runs same seed: prm_digest 2c5608d540fa455d == 2c5608d540fa455d -> True; adoption_log match=True
+[PASS] generated_tasks_pass_floor (§5.1)
+       12 generated tasks: all clear §6A whitelist + §6B floor=True; flat-integer-list tasks in pool=0 (must be 0)
+[PASS] novelty_is_real / L3 (§5.2)
+       planted already-solvable task rejected by L3=True (reason=L3); a registered task was probe-unsolved at registration=True
+[PASS] generator_is_oracle_blind (§5.3)
+       generator source oracle/suite/external-free=True (hits=[]); generate_spec signature carries no oracle/external object=True
+[PASS] emergence_set_is_sealed (§5.4)
+       no generated task behaviourally identical to an external task=True (collision=None); training source external-symbol-free=True; DYNAMIC: 6 oracles built during training, external ones among them=[] (must be []) -> blind=True
+[PASS] no_self_congratulation (§5.5)
+       minted-but-trivial rejected by lock (not counted)=True; minted-but-unsolved never counted as a win (None & wrong-program both fail the win-gate)=True
+[PASS] self_verification_is_sound (§5.6)
+       wrong program fails sealed battery=True; sealed reference passes its own battery=True; independent rediscovery (oe) passes the SEALED battery=True
+[PASS] invented_is_genuinely_composite (§5.1)
+       single-primitive block credited-as-composite=False (must be False); genuine nesting composite=True; measure_strong gates on is_composite=True
+[PASS] invented_is_not_given (§5.2)
+       pre-seeded block credited=False (must be False); given-vocab disjoint from mined names=True; |given_vocab|=49
+[PASS] minting_not_shallow (§5.3)
+       minted 4: all change structure=True; all behaviourally distant(>=0.5)=True; flat-int tasks=0 (must be 0); triple-lock(whitelist+floor)=True; shallow inc post-wrap correctly NOT structural=True
+[PASS] abstraction_anti_trivial (§5.4)
+       constant macro input_coupled=0.0 anti_cheat=0.0 (both 0); coupled abstraction input_coupled=1.00; admission never keeps a 0-coupled block=True
+[PASS] reach_unlock_is_load_bearing (§5.5)
+       WITH block solved + load-bearing=True (uses ('RS',)); WITHOUT block (library->[]) task OPEN=True
+[PASS] decomposition_no_leakage (§5.1)
+       decompose source oracle/tasks-free=True (hits=[]); signature carries only a verify callback=True; cracked bracket_depths by scan_step & SEALED-holdout verified=True
+[PASS] emergent_is_cross_group_and_was_open (§5.2)
+       planted block load-bearing in its OWN group 'scan'=True; strict count=0 (same-group NOT credited=True); credit gate requires cross-group (source)=True
+[PASS] groups_not_gerrymandered (§5.3)
+       near tasks share group=True; distinct shapes differ=True; groups ⊆ fixed shape set=True; not 1-per-task (7 groups for 32 tasks)=True
+[PASS] emergent_is_composite_and_mined (§5.4)
+       single-primitive composite-credited=False (must be False); seed-origin mined-credited=False (must be False); genuine decomposed block composite&mined=True; measure_strict gates on both (source)=True
+[PASS] hard_family_solutions_are_holdout_verified (§5.6)
+       decomposition crack passes SEALED holdout=True; wrong solver fails the battery=True; engine's final gate is the verify callback (source)=True
+[PASS] prereg_fp_unchanged (§3)
+       prereg_fp=7900ace767a4052a matches pin=True; self-consistent=True; every pinned field moves the fp when perturbed=True
+[PASS] proxy_is_holdout_blind (§3)
+       proxy source oracle/tasks/cost-free=True (hits=[]); public training inputs disjoint from H_cost=True; public sizes<=(4) < H_cost sizes>=(30)=True
+[PASS] inner_loop_cost_blind (§3)
+       optimizer cost-blind=True; proxy cost-blind=True; optimize driver cost-blind=True; cost imported only in run_audit=True
+[PASS] proxy_goodhart_gap (§3)
+       verdict rule (delta>gamma even with real gain -> COLLAPSE)=True; audit computes delta+verdict=True; report prints delta+verdict=True
+[PASS] correctness_gate_intact (§3)
+       all 2 targets: both arms pass the sealed oracle on independent re-verification=True (cached flags agree=True)
+[PASS] proxy_predicts_cost_not_correctness (§3)
+       proxy cost predictions vs correctness labels: AUC=0.35 (|AUC-0.5|<=0.25 -> uninformative about correctness, as designed: the proxy predicts a cost MAGNITUDE, never given correctness); n_correct=4 n_wrong=10
+[PASS] relative_delta_only (§3)
+       both arms equal budget+seed=True; gains are p0-p1 differences (never absolute)=True; live gains consistent=True
+[PASS] ablation_revert (§3)
+       WITHOUT proxy guidance the arm makes no move (optimized==baseline)=True; WITH the trained proxy it reduces 59->8 nodes=True
+[PASS] single_pinned_run (§3)
+       two independent runs, same seed: optimize digest 53658d1bcfe40af8==53658d1bcfe40af8 -> True; audit digest 3959637edd59e315==3959637edd59e315 -> True
+[PASS] no_target_swap (§3)
+       production run defaults to the pinned set (source)=True; requested subset honoured=True; pinned set has 6 targets
+[PASS] controls_only_strengthen (§3)
+       all 39 original controls still registered=True (missing=[]); cheap-verifier controls added on top=11; total registered=50
+------------------------------------------------------------------------------
+verifier_fp unchanged: True (841c6f6277e7c8ef -> 841c6f6277e7c8ef)
+controls passed: 50/50
+==============================================================================
