@@ -66,8 +66,13 @@ class OptimizeResult:
     prereg_fp: str = ""
     verifier_fp: str = ""
 
+    def correct_targets(self) -> List[Target]:
+        """Only targets whose BOTH arms pass the sealed correctness oracle. The delta
+        is, per the preregistration, computed ONLY over these."""
+        return [t for t in self.targets if t.correct_p0 and t.correct_p1]
+
     def mean_gain_proxy(self) -> float:
-        g = [t.gain_proxy for t in self.targets]
+        g = [t.gain_proxy for t in self.correct_targets()]
         return sum(g) / len(g) if g else 0.0
 
     def digest(self) -> str:
@@ -185,7 +190,9 @@ def run_audit(oracles: Dict[str, SealedOracle],
         battery = COST.hcost_battery(task)
         t.c0_real = COST.real_cost(t.p0, battery)
         t.c1_real = COST.real_cost(t.p1, battery)
-    gains_real = [t.gain_real for t in opt.targets if t.gain_real is not None]
+    # ONLY over programs that pass the sealed oracle (correctness_gate_intact).
+    gains_real = [t.gain_real for t in opt.correct_targets()
+                  if t.gain_real is not None]
     mean_gr = sum(gains_real) / len(gains_real) if gains_real else 0.0
     delta = opt.mean_gain_proxy() - mean_gr
     verdict = verdict_of(mean_gr, delta, PRE.TAU, PRE.GAMMA)
